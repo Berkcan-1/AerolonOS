@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+"kernel",
+    "crates/nc-hal",
+    "crates/nc-arch",
+    "crates/nc-math",
+    "crates/nc-mem",
+    "crates/nc-assets",
+    "crates/nc-gfx",
+    "crates/nc-font",
+    "crates/nc-ui",
+    "crates/nc-splash",
+    "crates/nc-setup",
+    "crates/nc-input",
+    "crates/nc-storage",
+    "crates/nc-desktop",
+    "crates/nc-platform-qemu",
+    "crates/nc-platform-generic",
+]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+debug = false

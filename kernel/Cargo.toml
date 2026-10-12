@@ -1,0 +1,31 @@
+[package]
+name = "nc-kernel"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+default = []
+qemu = ["dep:nc-platform-qemu"]
+generic = ["dep:nc-platform-generic"]
+
+[dependencies]
+nc-hal = { path = "../crates/nc-hal" }
+nc-arch = { path = "../crates/nc-arch" }
+nc-math = { path = "../crates/nc-math" }
+nc-mem = { path = "../crates/nc-mem" }
+nc-gfx = { path = "../crates/nc-gfx" }
+nc-ui = { path = "../crates/nc-ui" }
+nc-splash = { path = "../crates/nc-splash" }
+nc-setup = { path = "../crates/nc-setup" }
+nc-desktop = { path = "../crates/nc-desktop" }
+nc-input = { path = "../crates/nc-input" }
+nc-storage = { path = "../crates/nc-storage" }
+nc-platform-qemu = { path = "../crates/nc-platform-qemu", optional = true }
+nc-platform-generic = { path = "../crates/nc-platform-generic", optional = true }
