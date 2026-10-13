@@ -1,0 +1,9 @@
+[package]
+name = "nc-apps"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nc-app = { path = "../nc-app" }
+nc-app-files = { path = "../nc-app-files" }
+nc-app-browser = { path = "../nc-app-browser" }

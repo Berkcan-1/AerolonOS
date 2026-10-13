@@ -1,7 +1,7 @@
 #![no_std]
-
 use core::arch::asm;
 
+pub mod rand;
 pub mod serial;
 pub mod time;
 

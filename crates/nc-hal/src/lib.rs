@@ -4,7 +4,22 @@ use core::fmt;
 
 pub const BOOT_INFO_ADDRESS: usize = 0x0900;
 pub const BOOT_INFO_MAGIC: u32 = 0x4942_434E;
-pub const BOOT_INFO_VERSION: u32 = 1;
+pub const BOOT_INFO_VERSION: u32 = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryRegion {
+    pub base: u64,
+    pub length: u64,
+    pub region_type: u32,
+    pub acpi_extended: u32,
+}
+
+impl MemoryRegion {
+    pub fn is_usable(&self) -> bool {
+        self.region_type == 1
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -29,6 +44,8 @@ pub struct BootInfo {
     pub magic: u32,
     pub version: u32,
     pub framebuffer: FramebufferInfo,
+    pub memory_map_addr: u64,
+    pub memory_map_count: u32,
 }
 
 impl BootInfo {
@@ -39,6 +56,28 @@ impl BootInfo {
         } else {
             None
         }
+    }
+
+    pub fn memory_regions(&self) -> &[MemoryRegion] {
+        if self.memory_map_addr == 0 || self.memory_map_count == 0 {
+            return &[];
+        }
+        unsafe {
+            core::slice::from_raw_parts(
+                self.memory_map_addr as *const MemoryRegion,
+                self.memory_map_count as usize,
+            )
+        }
+    }
+
+    pub fn total_usable_memory(&self) -> u64 {
+        let mut total = 0u64;
+        for region in self.memory_regions() {
+            if region.is_usable() {
+                total = total.saturating_add(region.length);
+            }
+        }
+        total
     }
 }
 
@@ -121,16 +160,18 @@ pub trait BlockDevice {
     fn write_blocks(&mut self, lba: u64, count: u32, buffer: &[u8]) -> Result<(), ()>;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeyCode {
     Enter,
     Escape,
     Space,
     Tab,
+    Backspace,
     Up,
     Down,
     Left,
     Right,
+    Char(char),
     Unknown,
 }
 
@@ -140,6 +181,8 @@ pub struct MouseState {
     pub y: i32,
     pub left_down: bool,
     pub left_clicked: bool,
+    pub right_down: bool,
+    pub right_clicked: bool,
 }
 
 pub trait InputDevice {

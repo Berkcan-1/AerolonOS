@@ -5,7 +5,7 @@ use nc_hal::FramebufferInfo;
 pub mod blur;
 pub mod compose;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -219,21 +219,21 @@ impl<'a> Canvas<'a> {
         width: i32,
         height: i32,
     ) {
+        let first = 0.max(-source_x).max(-destination_x);
+        let last = width.min(source.width as i32 - source_x).min(self.width as i32 - destination_x);
+        if last <= first {
+            return;
+        }
+        let length = (last - first) as usize;
         for row in 0..height {
             let from_y = source_y + row;
             let to_y = destination_y + row;
             if from_y < 0 || to_y < 0 || from_y >= source.height as i32 || to_y >= self.height as i32 {
                 continue;
             }
-            for column in 0..width {
-                let from_x = source_x + column;
-                let to_x = destination_x + column;
-                if from_x < 0 || to_x < 0 || from_x >= source.width as i32 || to_x >= self.width as i32 {
-                    continue;
-                }
-                self.pixels[to_y as usize * self.width + to_x as usize] =
-                    source.pixels[from_y as usize * source.width + from_x as usize];
-            }
+            let from = from_y as usize * source.width + (source_x + first) as usize;
+            let to = to_y as usize * self.width + (destination_x + first) as usize;
+            self.pixels[to..to + length].copy_from_slice(&source.pixels[from..from + length]);
         }
     }
 }
