@@ -12,7 +12,9 @@ kernel_main sirasi:
 4. Zemini (backdrop) ciz ve ekrana ver; sonra Splash'i hazirla (katmanlar ve bulanik seviyeler).
 5. Animasyon dongusu: Preparation hazir olana kadar Intro ve Idle; hazir olunca Outro. Her karede sadece degisen
    dikdortgenler framebuffer'a yazilir.
-6. Kurulum ekranini ciz ve ekrana yumusak gecisle getir. Orada dur.
+6. Sistem diskte kurulu degilse kurulum sihirbazi calisir; kurulduysa dogrudan masaustune gecilir.
+7. Masaustu: DesktopState nc_apps::builtin() ile olusturulur. Dongu her karede girdiyi okur, state.update cagirir; sahne
+   sadece "kirli" ise yeniden cizilir, sadece imlec oynadiysa imlecin eski ve yeni dikdortgeni guncellenir.
 
 ## Bellek haritasi
 
@@ -26,11 +28,12 @@ kernel_main sirasi:
     0x100000 cekirdek (.text .rodata .data .bss, 64 KB yigin)
     0x400000 bellek havuzu (Arena), 60 MB, 0x4000000'a kadar
 
-Bellek havuzu su an su sekilde dolar (1280x720'de yaklasik 25 MB):
+Bellek havuzu su an su sekilde dolar (1280x720'de yaklasik 29 MB; ayrica 8 MB dinamik heap, toplam yaklasik 37 MB; uygulamalar Box ile bu heap'i kullanir):
 
     ekran tamponu      3.7 MB   (u32 piksel, 0x00RRGGBB)
     gecis tamponu      3.7 MB
     kurulum tamponu    3.7 MB
+    duvar kagidi       3.7 MB   (masaustu duvar kagidi onbellegi)
     splash katmanlari  yaklasik 14 MB (zemin kopyasi + 4 bulaniklik seviyesi + gecici)
 
 Sayfalama: 0-3 GB onbellekli, 3-4 GB onbelleksiz, 2 MB sayfalar. Cekirdek en az 64 MB RAM bekler
@@ -47,7 +50,15 @@ Sayfalama: 0-3 GB onbellekli, 3-4 GB onbelleksiz, 2 MB sayfalar. Cekirdek en az 
     nc-font                -> nc-math
     nc-ui                  -> nc-gfx, nc-font, nc-math
     nc-splash              -> nc-assets, nc-gfx, nc-font, nc-math, nc-mem, nc-ui
-    nc-setup               -> nc-gfx, nc-font, nc-ui
+    nc-setup               -> nc-hal, nc-gfx, nc-font, nc-ui
+    nc-input               -> nc-arch, nc-hal
+    nc-storage             -> nc-arch, nc-hal
+    nc-app                 -> nc-hal, nc-gfx, nc-font, nc-ui
+    nc-app-settings        -> nc-app, nc-gfx, nc-font, nc-ui
+    nc-app-system          -> nc-app, nc-gfx, nc-font, nc-ui
+    nc-app-stopwatch       -> nc-app, nc-gfx, nc-font, nc-ui
+    nc-apps                -> nc-app, nc-app-settings, nc-app-system, nc-app-stopwatch
+    nc-desktop             -> nc-hal, nc-gfx, nc-font, nc-ui, nc-app   (uygulamalari adiyla bilmez)
     nc-platform-qemu       -> nc-hal, nc-arch
     nc-platform-generic    -> nc-hal, nc-arch
     kernel (nc-kernel)     -> hepsi (platform ozellik bayragina gore biri)

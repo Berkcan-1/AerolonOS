@@ -22,13 +22,14 @@ VBE_INFO equ 0x0600
 MODE_INFO equ 0x0800
 BOOT_INFO equ 0x0900
 BOOT_INFO_MAGIC equ 0x4942434E
-BOOT_INFO_VERSION equ 1
-BOOT_INFO_WORDS equ 20
+BOOT_INFO_VERSION equ 2
+BOOT_INFO_WORDS equ 32
 KERNEL_SOURCE equ 0x9800
 KERNEL_BASE equ 0x100000
 BOOT_TABLE_LENGTH equ 0x7C10
 STAGE1_SIZE equ 2048
 STAGE2_SIZE equ 4096
+E820_TARGET equ 0x0A00
 
 stage2_start:
     xor ax, ax
@@ -37,14 +38,12 @@ stage2_start:
     mov ss, ax
     mov sp, 0x7C00
     cld
-
     mov ax, 0x2401
     int 0x15
     in al, 0x92
     or al, 2
     and al, 0xFE
     out 0x92, al
-
     pushfd
     pop eax
     mov ecx, eax
@@ -57,7 +56,6 @@ stage2_start:
     popfd
     xor eax, ecx
     jz no_long_mode
-
     mov eax, 0x80000000
     cpuid
     cmp eax, 0x80000001
@@ -66,16 +64,49 @@ stage2_start:
     cpuid
     test edx, 1 << 29
     jz no_long_mode
-
+    call detect_memory
     call setup_video
     jc video_failed
-
     cli
     lgdt [gdt_descriptor]
     mov eax, cr0
     or eax, 1
     mov cr0, eax
     jmp 0x08:protected_entry
+
+detect_memory:
+    xor ebx, ebx
+    xor bp, bp
+    mov di, E820_TARGET
+    mov edx, 0x534D4150
+.e820_loop:
+    mov eax, 0xE820
+    mov ecx, 24
+    mov dword [es:di + 20], 1
+    int 0x15
+    jc .e820_done
+    cmp eax, 0x534D4150
+    jne .e820_done
+    test ecx, ecx
+    jz .skip_entry
+    cmp cl, 20
+    jbe .not_extended
+    test byte [es:di + 20], 1
+    jz .skip_entry
+.not_extended:
+    mov ecx, [es:di + 8]
+    or ecx, [es:di + 12]
+    jz .skip_entry
+    inc bp
+    add di, 24
+    cmp bp, 32
+    jae .e820_done
+.skip_entry:
+    test ebx, ebx
+    jnz .e820_loop
+.e820_done:
+    mov [entry_count], bp
+    ret
 
 setup_video:
     mov dword [VBE_INFO], 0x32454256
@@ -86,7 +117,6 @@ setup_video:
     jne .fail
     cmp dword [VBE_INFO], 0x41534556
     jne .fail
-
     mov ax, PREFERRED_WIDTH
     mov bx, PREFERRED_HEIGHT
     call find_mode
@@ -95,7 +125,6 @@ setup_video:
     mov bx, FALLBACK_HEIGHT
     call find_mode
     jc .fail
-
 .found:
     mov bx, dx
     or bx, 0x4000
@@ -106,7 +135,6 @@ setup_video:
     call fill_boot_info
     clc
     ret
-
 .fail:
     stc
     ret
@@ -117,7 +145,6 @@ find_mode:
     mov si, [VBE_INFO + 14]
     mov ax, [VBE_INFO + 16]
     mov [mode_list_segment], ax
-
 .next:
     mov fs, [mode_list_segment]
     mov cx, [fs:si]
@@ -149,7 +176,6 @@ find_mode:
     mov dx, [candidate_mode]
     clc
     ret
-
 .none:
     stc
     ret
@@ -183,6 +209,11 @@ fill_boot_info:
     mov [BOOT_INFO + 0x21], al
     mov al, [MODE_INFO + 35]
     mov [BOOT_INFO + 0x22], al
+    mov byte [BOOT_INFO + 0x23], 0
+    mov dword [BOOT_INFO + 0x28], E820_TARGET
+    mov dword [BOOT_INFO + 0x2C], 0
+    movzx eax, word [entry_count]
+    mov [BOOT_INFO + 0x30], eax
     ret
 
 print_string:
@@ -214,7 +245,7 @@ want_width: dw 0
 want_height: dw 0
 candidate_mode: dw 0
 mode_list_segment: dw 0
-
+entry_count: dw 0
 message_no_long_mode: db 'NetizenCore: 64 bit islemci gerekli', 0
 message_video_failed: db 'NetizenCore: VBE grafik modu bulunamadi', 0
 

@@ -35,8 +35,10 @@ Tam olarak biri secilmelidir. build.sh profil adini ozellik olarak verir.
 5. Zemini ciz ve ekrana ver.
 6. Splash::new ile animasyon katmanlarini hazirla.
 7. Animasyon dongusu (16 ms kare hedefi). prepare::Preparation::poll true donunce splash.request_finish cagrilir.
-8. Splash Done olunca kurulum ekrani cizilir ve 600 ms'lik yumusak gecisle gosterilir.
-9. Durur (halt_forever).
+8. Splash Done olunca (sistem kurulu degilse) kurulum sihirbazi 600 ms'lik gecisle gosterilir ve kurulum bitene kadar calisir.
+9. Masaustu: DesktopState nc_apps::builtin() ile kurulur, 600 ms'lik gecisle gosterilir ve sonsuz donguye girer. Dongu sadece
+   degisiklik oldugunda sahneyi cizer; yalnizca imlec oynadiysa iki kucuk dikdortgeni gunceller. Kapat/Yeniden baslat
+   istegi platforma iletilir.
 
 ## Bellek ve sureler
 

@@ -46,6 +46,8 @@ impl DeviceManager {
             y: height / 2,
             left_down: false,
             left_clicked: false,
+            right_down: false,
+            right_clicked: false,
         };
         let mut key = None;
 

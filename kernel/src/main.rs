@@ -7,10 +7,12 @@ mod devices;
 mod entry;
 mod platform;
 mod prepare;
+mod process;
 
 use alloc::boxed::Box;
 use core::panic::PanicInfo;
 use devices::DeviceManager;
+use process::ProcessManager;
 use nc_arch::halt_forever;
 use nc_arch::time::Clock;
 use nc_desktop::{DesktopAction, DesktopState};
@@ -22,8 +24,6 @@ use nc_mem::Arena;
 use nc_setup::{SetupAction, SetupState};
 use nc_splash::{Phase, Splash, SplashOptions};
 
-
-
 extern "C" {
     static __kernel_bin_start: u8;
     static __kernel_bin_end: u8;
@@ -33,8 +33,6 @@ extern "C" {
 static ALLOCATOR: nc_mem::LockedHeap = nc_mem::LockedHeap::empty();
 
 const ARENA_BASE: usize = 0x0040_0000;
-const ARENA_SIZE: usize = 0x03C0_0000;
-const HEAP_SIZE: usize = 8 * 1024 * 1024;
 const FRAME_MS: u32 = 16;
 const TRANSITION_MS: u32 = 600;
 
@@ -43,12 +41,38 @@ fn new_canvas(arena: &mut Arena, width: usize, height: usize) -> Option<Canvas<'
     Canvas::new(pixels, width, height)
 }
 
+fn detect_ram_bounds(boot: &BootInfo) -> (usize, usize) {
+    let mut total_usable: u64 = 0;
+    let mut max_usable_end: u64 = 0;
+    for region in boot.memory_regions() {
+        if region.is_usable() {
+            total_usable = total_usable.saturating_add(region.length);
+            let end = region.base.saturating_add(region.length);
+            if region.base <= 0x0040_0000 && end > 0x0040_0000 {
+                if end > max_usable_end {
+                    max_usable_end = end;
+                }
+            }
+        }
+    }
+    if max_usable_end == 0 {
+        max_usable_end = 64 * 1024 * 1024;
+    }
+    if total_usable == 0 {
+        total_usable = max_usable_end;
+    }
+    let total_mb = (total_usable / (1024 * 1024)).max(64) as usize;
+    let usable_limit = (max_usable_end.min(0xC000_0000)) as usize;
+    (total_mb, usable_limit)
+}
+
 #[no_mangle]
 pub extern "C" fn kernel_main() -> ! {
     unsafe {
         core::arch::asm!("cli");
         nc_arch::disable_pic();
     }
+
     let mut active = platform::create();
     active.init();
     log!(&active, "NetizenCore cekirdegi basladi, platform: {}", active.name());
@@ -65,34 +89,34 @@ pub extern "C" fn kernel_main() -> ! {
     let mut clock = Clock::calibrate();
     let width = framebuffer.width as usize;
     let height = framebuffer.height as usize;
-    let mut arena = unsafe { Arena::new(ARENA_BASE, ARENA_SIZE) };
 
-    let heap_mem = match arena.alloc_bytes(HEAP_SIZE) {
-        Some(mem) => mem,
-        None => {
-            log!(&active, "heap bellegi ayrilamadi");
-            halt_forever()
-        }
-    };
+    let (total_ram_mb, usable_limit) = detect_ram_bounds(&boot);
+    let total_avail = usable_limit.saturating_sub(ARENA_BASE);
+    let canvas_bytes = width * height * 4;
+    let arena_size = (canvas_bytes * 10).max(28 * 1024 * 1024).min(total_avail / 2);
+    let heap_size = total_avail.saturating_sub(arena_size);
+    let heap_base = ARENA_BASE + arena_size;
+
+    let mut arena = unsafe { Arena::new(ARENA_BASE, arena_size) };
     unsafe {
-        ALLOCATOR.init(heap_mem.as_mut_ptr() as usize, heap_mem.len());
+        ALLOCATOR.init(heap_base, heap_size);
     }
-    log!(&active, "dinamik heap baslatildi (8 MB)");
+    log!(
+        &active,
+        "Dinamik bellek kuruldu: {} MB RAM (Arena: {} MB, Heap: {} MB)",
+        total_ram_mb,
+        arena_size / (1024 * 1024),
+        heap_size / (1024 * 1024)
+    );
 
     let mut is_installed = false;
-    log!(&active, "DEBUG: ATA kanali taranacak...");
     if let Some(mut dev) = nc_storage::scan_channel(0) {
-        log!(&active, "DEBUG: Kanal 0 bulundu, sektor 0 okunuyor...");
         let installed = nc_storage::is_installed(&mut dev);
-        log!(&active, "DEBUG: is_installed sonucu: {}", if installed { "EVET" } else { "HAYIR" });
         if installed {
             is_installed = true;
         }
-    } else {
-        log!(&active, "DEBUG: Kanal 0 tespit edilemedi.");
     }
 
-  
     let mut screen = match new_canvas(&mut arena, width, height) {
         Some(canvas) => canvas,
         None => halt_forever(),
@@ -105,6 +129,10 @@ pub extern "C" fn kernel_main() -> ! {
         Some(canvas) => canvas,
         None => halt_forever(),
     };
+    let mut wallpaper = match new_canvas(&mut arena, width, height) {
+        Some(canvas) => canvas,
+        None => halt_forever(),
+    };
 
     nc_ui::draw_backdrop(&mut screen);
     unsafe {
@@ -112,10 +140,8 @@ pub extern "C" fn kernel_main() -> ! {
     }
 
     let splash_opts = if is_installed {
-        log!(&active, "sistem diskte kurulu algilandi (kurulum atlaniyor)");
         SplashOptions { subtitle: None }
     } else {
-        log!(&active, "kurulum gerekli, sihirbaz baslatilacak");
         SplashOptions { subtitle: Some("PREPARING SETUP") }
     };
 
@@ -125,6 +151,7 @@ pub extern "C" fn kernel_main() -> ! {
     };
 
     let mut preparation = prepare::Preparation::new(clock.now_ms());
+
     loop {
         let now = clock.now_ms();
         if preparation.poll(now) {
@@ -155,7 +182,6 @@ pub extern "C" fn kernel_main() -> ! {
     if !is_installed {
         let block_infos = device_manager.block_infos();
         let mut setup_state = SetupState::new(&block_infos);
-
         snapshot.copy_rect_from(&screen, 0, 0, 0, 0, width as i32, height as i32);
         let (mouse, _) = device_manager.poll_input(width as i32, height as i32);
         nc_setup::draw(&mut work_screen, active.name(), &setup_state, &mouse);
@@ -187,42 +213,34 @@ pub extern "C" fn kernel_main() -> ! {
                     (&__kernel_bin_end as *const u8 as usize) - (&__kernel_bin_start as *const u8 as usize)
                 };
                 let kernel_slice = unsafe { core::slice::from_raw_parts(0x100000 as *const u8, kernel_bytes) };
-                
-                // Tüm blok cihazları yerine sadece seçilen hedef sabit diske (Kanal 0) yazın:
+
                 if let Some(mut ata_dev) = nc_storage::scan_channel(0) {
                     if ata_dev.info.device_type == DeviceType::HardDisk {
-                        if nc_storage::install_to_disk(&mut ata_dev, stage2_slice, kernel_slice).is_ok() {
-                            log!(&active, "Sabit disk: MBR, stage2 ve kernel basariyla yazildi!");
-                        } else {
-                            log!(&active, "Sabit disk: Kurulum yazma hatasi!");
-                        }
-                      }
+                        let _ = nc_storage::install_to_disk(&mut ata_dev, stage2_slice, kernel_slice);
                     }
                 }
-               
-            
+            }
 
             nc_setup::draw(&mut work_screen, active.name(), &setup_state, &mouse);
             screen.copy_rect_from(&work_screen, 0, 0, 0, 0, width as i32, height as i32);
             nc_ui::draw_cursor(&mut screen, mouse.x, mouse.y);
-
             unsafe {
                 present(&screen, &framebuffer);
             }
 
             if action == SetupAction::Reboot {
-                log!(&active, "kurulum bitti, diskten baslatmak icin yeniden baslatiliyor");
                 active.reboot();
             }
-
             clock.sleep_until(now + FRAME_MS);
         }
     }
 
     snapshot.copy_rect_from(&screen, 0, 0, 0, 0, width as i32, height as i32);
-    let mut desktop_state = DesktopState::new();
-    let (mouse, _) = device_manager.poll_input(width as i32, height as i32);
-    nc_desktop::draw(&mut work_screen, active.name(), &desktop_state, &mouse, 0);
+    let mut desktop_state = DesktopState::new(active.name(), total_ram_mb as u32, nc_apps::builtin());
+    nc_desktop::draw_wallpaper(&mut wallpaper, desktop_state.wallpaper_index());
+    desktop_state.take_wallpaper_dirty();
+    nc_desktop::draw(&mut work_screen, &wallpaper, &desktop_state);
+    desktop_state.take_dirty();
 
     let desktop_trans_start = clock.now_ms();
     loop {
@@ -238,33 +256,57 @@ pub extern "C" fn kernel_main() -> ! {
         clock.sleep_until(now + FRAME_MS);
     }
 
+    let cursor_width = nc_ui::CURSOR_WIDTH as i32;
+    let cursor_height = nc_ui::CURSOR_HEIGHT as i32;
     let desktop_start_time = clock.now_ms();
+    let (first_mouse, _) = device_manager.poll_input(width as i32, height as i32);
+    screen.copy_rect_from(&work_screen, 0, 0, 0, 0, width as i32, height as i32);
+    nc_ui::draw_cursor(&mut screen, first_mouse.x, first_mouse.y);
+    unsafe {
+        present(&screen, &framebuffer);
+    }
+
+    let mut process_manager = ProcessManager::new();
+    let mut last_cursor = (first_mouse.x, first_mouse.y);
+
     loop {
         let now = clock.now_ms();
+        process_manager.poll_all();
         let (mouse, key) = device_manager.poll_input(width as i32, height as i32);
-        let action = desktop_state.update(&mouse, key, width as i32, height as i32);
+        let uptime_ms = now.wrapping_sub(desktop_start_time);
+        let action = desktop_state.update(&mouse, key, width as i32, height as i32, uptime_ms);
 
-        let elapsed_secs = now.wrapping_sub(desktop_start_time) / 1000;
-        nc_desktop::draw(&mut work_screen, active.name(), &desktop_state, &mouse, elapsed_secs);
-        screen.copy_rect_from(&work_screen, 0, 0, 0, 0, width as i32, height as i32);
-        nc_ui::draw_cursor(&mut screen, mouse.x, mouse.y);
+        if desktop_state.take_wallpaper_dirty() {
+            nc_desktop::draw_wallpaper(&mut wallpaper, desktop_state.wallpaper_index());
+        }
 
-        unsafe {
-            present(&screen, &framebuffer);
+        if desktop_state.take_dirty() {
+            nc_desktop::draw(&mut work_screen, &wallpaper, &desktop_state);
+            screen.copy_rect_from(&work_screen, 0, 0, 0, 0, width as i32, height as i32);
+            nc_ui::draw_cursor(&mut screen, mouse.x, mouse.y);
+            unsafe {
+                present(&screen, &framebuffer);
+            }
+            last_cursor = (mouse.x, mouse.y);
+        } else if (mouse.x, mouse.y) != last_cursor {
+            screen.copy_rect_from(&work_screen, last_cursor.0, last_cursor.1, last_cursor.0, last_cursor.1, cursor_width, cursor_height);
+            nc_ui::draw_cursor(&mut screen, mouse.x, mouse.y);
+            unsafe {
+                present_region(&screen, &framebuffer, Rect::new(last_cursor.0, last_cursor.1, cursor_width, cursor_height));
+                present_region(&screen, &framebuffer, Rect::new(mouse.x, mouse.y, cursor_width, cursor_height));
+            }
+            last_cursor = (mouse.x, mouse.y);
         }
 
         match action {
             DesktopAction::Shutdown => {
-                log!(&active, "kullanici kapatti, platform kapatiliyor");
                 active.shutdown(0);
             }
             DesktopAction::Reboot => {
-                log!(&active, "kullanici yeniden baslatti, sistem reboot ediliyor");
                 active.reboot();
             }
             DesktopAction::None => {}
         }
-
         clock.sleep_until(now + FRAME_MS);
     }
 }

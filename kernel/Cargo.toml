@@ -20,11 +20,14 @@ nc-hal = { path = "../crates/nc-hal" }
 nc-arch = { path = "../crates/nc-arch" }
 nc-math = { path = "../crates/nc-math" }
 nc-mem = { path = "../crates/nc-mem" }
+nc-fs = { path = "../crates/nc-fs" }
+nc-net = { path = "../crates/nc-net" }
 nc-gfx = { path = "../crates/nc-gfx" }
 nc-ui = { path = "../crates/nc-ui" }
 nc-splash = { path = "../crates/nc-splash" }
 nc-setup = { path = "../crates/nc-setup" }
 nc-desktop = { path = "../crates/nc-desktop" }
+nc-apps = { path = "../crates/nc-apps" }
 nc-input = { path = "../crates/nc-input" }
 nc-storage = { path = "../crates/nc-storage" }
 nc-platform-qemu = { path = "../crates/nc-platform-qemu", optional = true }

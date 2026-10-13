@@ -89,7 +89,7 @@ build_kernel() {
     if command -v rustup >/dev/null 2>&1; then
         rustup target add "$TARGET"
     fi
-    RUSTFLAGS="-C relocation-model=static" \
+    RUSTFLAGS='-C relocation-model=static --cfg chacha20_force_soft --cfg poly1305_force_soft --cfg curve25519_dalek_backend="serial"' \
         cargo build --release \
         --manifest-path "$ROOT/kernel/Cargo.toml" \
         --target "$TARGET" \
@@ -120,6 +120,18 @@ build_iso() {
         "$OUT/iso"
 }
 
+build_system_img() {
+    local sys_dir="$BUILD/system_root"
+    rm -rf "$sys_dir"
+    mkdir -p "$sys_dir/app"
+    echo "NETIZENCORE_SYSTEM_READY" > "$sys_dir/app/build.prop"
+    if command -v mkfs.erofs >/dev/null 2>&1; then
+        mkfs.erofs -z none "$BUILD/system.img" "$sys_dir" >/dev/null
+        # Bölüm 1'e (LBA 133120, offset = 133120 * 512 = 68157440) system.img yaz:
+        dd if="$BUILD/system.img" of="$BUILD/disk.img" bs=512 seek=133120 conv=notrunc 2>/dev/null || true
+    fi
+}
+
 build_profile() {
     configure_profile "$1"
     rm -rf "$OUT"
@@ -148,14 +160,15 @@ run_qemu() {
 
 if [ "$sig" = "NETIZEN" ]; then
         echo "Kurulu NetizenCore algilandi: ISO takilmadan dogrudan sabit diskten baslatiliyor..."
-        qemu-system-x86_64 \
+       qemu-system-x86_64 \
             ${accel[@]+"${accel[@]}"} \
             -m 256 \
             -drive file="$BUILD/disk.img",format=raw,if=ide,index=0,media=disk \
             -boot order=c \
+            -netdev user,id=net0 \
+            -device e1000,netdev=net0 \
             -no-reboot \
             -vga std \
-            -d int,cpu_reset -D "$BUILD/qemu.log" \
             -serial stdio \
             -debugcon "file:$BUILD/debugcon.log" \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04
