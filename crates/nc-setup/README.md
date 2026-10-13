@@ -1,23 +1,18 @@
 # nc-setup
 
-Kurulum ekrani. Bagimlilik: nc-gfx, nc-font, nc-ui. Su an tek ekran: Welcome. Etkilesim yoktur.
-
-## Ekran duzeni
-
-- Ust: NETIZENCORE (sol, koyu), SETUP (sag, soluk).
-- Sol: dikey zaman cizgisi ve dort adim: WELCOME (aktif: azure cam kure, koyu yazi), DISKS, INSTALL, FINISH (pasif: kucuk
-  gri nokta, soluk yazi).
-- Sag: beyaz cam kart (yumusak golgeli). Icinde STEP 1 OF 4, buyuk WELCOME basligi, altinda azure -> aqua hap, iki satir
-  metin (SETUP IS READY. / NEXT: DETECT DISKS.), altta aqua kure + READY ve sagda PLATFORM <ad>.
-- Alt sol: NETIZENCORE ve surum (Cargo paket surumu).
-
-Olculer ekran yuksekliginden turetilir (unit = yukseklik/36, en az 10); farkli cozunurluklerde orantili kalir.
+Kurulum sihirbazi. Bagimlilik: nc-hal, nc-gfx, nc-font, nc-ui. Dort adim: WELCOME, DISKS (kurulum hedefi secimi), INSTALL
+(ilerleme cubugu), FINISH (RESTART).
 
 ## Genel API
 
-- draw(&mut Canvas, &SetupInfo { platform })
+- SetupState::new(&[BlockDeviceInfo]), update(mouse, key, width, height) -> SetupAction (None, Shutdown, Reboot)
+- draw(canvas, platform, state, mouse)
 
-## Yeni adim eklemek
+## Davranis
 
-Su an adimlar sabit bir listedir (STEPS, NUMBERS). Disk algilama gelince DISKS adimi icin ayri bir fonksiyon yazilmali
-ve draw yerine bir ekran yoneticisi (hangi adim gorunuyor) kullanilmalidir. Klavye girdisi gelince secim ve gecis eklenecek.
+- Sol: dikey zaman cizgisi (aktif, tamamlanan, bekleyen adim). Sag: kart (baslik, icerik, alt satirda READY rozeti,
+  platform, BACK ve NEXT/RESTART dugmeleri).
+- DISKS adiminda algilanan diskler listelenir (HDD veya ROM rozeti, model, boyut); tikla veya yukari/asagi ile secilir.
+  Secim su an gosterim amaclidir: kernel yazmayi her zaman kanal 0'daki sabit diske yapar.
+- INSTALL adimi ilerleme cubugunu zamanla doldurur; asil yazma islemini kernel/src/main.rs yapar.
+- Klavye: Enter/Space ileri, Escape geri, Up/Down disk secimi.

@@ -1,0 +1,155 @@
+extern crate alloc;
+
+use alloc::vec::Vec;
+
+pub const TCP_FIN: u8 = 0x01;
+pub const TCP_SYN: u8 = 0x02;
+pub const TCP_RST: u8 = 0x04;
+pub const TCP_PSH: u8 = 0x08;
+pub const TCP_ACK: u8 = 0x10;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TcpState {
+    Closed,
+    SynSent,
+    Established,
+    FinWait,
+}
+
+pub struct TcpSocket {
+    pub id: usize,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub dst_ip: [u8; 4],
+    pub seq_num: u32,
+    pub ack_num: u32,
+    pub state: TcpState,
+    pub rx_buffer: Vec<u8>,
+}
+
+impl TcpSocket {
+    pub fn new(id: usize, dst_ip: [u8; 4], dst_port: u16, src_port: u16) -> Self {
+        TcpSocket {
+            id,
+            src_port,
+            dst_port,
+            dst_ip,
+            seq_num: 1000,
+            ack_num: 0,
+            state: TcpState::Closed,
+            rx_buffer: Vec::new(),
+        }
+    }
+}
+
+pub fn build_ipv4_packet(
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    protocol: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let header_len = 20usize;
+    let total_len = (header_len + payload.len()) as u16;
+    let mut pkt = Vec::with_capacity(header_len + payload.len());
+
+    pkt.push(0x45); // Version 4, IHL 5
+    pkt.push(0x00); // DSCP / ECN
+    pkt.extend_from_slice(&total_len.to_be_bytes());
+    pkt.extend_from_slice(&0x1234u16.to_be_bytes()); // Packet ID
+    pkt.extend_from_slice(&0x4000u16.to_be_bytes()); // Flags (Don't Fragment)
+    pkt.push(64);   // TTL
+    pkt.push(protocol); // 6 for TCP
+    pkt.extend_from_slice(&[0, 0]); // Checksum placeholder
+    pkt.extend_from_slice(&src_ip);
+    pkt.extend_from_slice(&dst_ip);
+
+    let csum = compute_checksum(&pkt);
+    pkt[10] = (csum >> 8) as u8;
+    pkt[11] = (csum & 0xFF) as u8;
+    pkt.extend_from_slice(payload);
+    pkt
+}
+
+pub fn build_ethernet_frame(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    ethertype: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(14 + payload.len());
+    frame.extend_from_slice(&dst_mac);
+    frame.extend_from_slice(&src_mac);
+    frame.extend_from_slice(&ethertype.to_be_bytes());
+    frame.extend_from_slice(payload);
+    frame
+}
+
+pub fn build_http_get(host: &str, path: &str) -> Vec<u8> {
+    let mut req = Vec::new();
+    req.extend_from_slice(b"GET ");
+    req.extend_from_slice(path.as_bytes());
+    req.extend_from_slice(b" HTTP/1.1\r\nHost: ");
+    req.extend_from_slice(host.as_bytes());
+    req.extend_from_slice(b"\r\nUser-Agent: NetizenCore/1.0\r\nAccept: text/html\r\nAccept-Language: en\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n");
+    req
+}
+
+pub fn build_tcp_segment(
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let tcp_header_len = 20usize;
+    let total_tcp_len = tcp_header_len + payload.len();
+    let mut tcp_pkt = Vec::with_capacity(total_tcp_len);
+
+    tcp_pkt.extend_from_slice(&src_port.to_be_bytes());
+    tcp_pkt.extend_from_slice(&dst_port.to_be_bytes());
+    tcp_pkt.extend_from_slice(&seq.to_be_bytes());
+    tcp_pkt.extend_from_slice(&ack.to_be_bytes());
+    tcp_pkt.push(0x50); // Data offset (5 * 4 = 20 bytes)
+    tcp_pkt.push(flags);
+    tcp_pkt.extend_from_slice(&8192u16.to_be_bytes()); // Window Size
+    tcp_pkt.extend_from_slice(&[0, 0]); // Checksum placeholder
+    tcp_pkt.extend_from_slice(&[0, 0]); // Urgent Pointer
+
+    tcp_pkt.extend_from_slice(payload);
+
+    // Compute TCP Pseudo-header Checksum
+    let mut pseudo = Vec::new();
+    pseudo.extend_from_slice(&src_ip);
+    pseudo.extend_from_slice(&dst_ip);
+    pseudo.push(0);
+    pseudo.push(6); // Protocol TCP = 6
+    pseudo.extend_from_slice(&(total_tcp_len as u16).to_be_bytes());
+    pseudo.extend_from_slice(&tcp_pkt);
+
+    let csum = compute_checksum(&pseudo);
+    tcp_pkt[16] = (csum >> 8) as u8;
+    tcp_pkt[17] = (csum & 0xFF) as u8;
+
+    tcp_pkt
+}
+
+fn compute_checksum(data: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut i = 0;
+    while i + 1 < data.len() {
+        let word = u16::from_be_bytes([data[i], data[i + 1]]) as u32;
+        sum = sum.wrapping_add(word);
+        i += 2;
+    }
+    if i < data.len() {
+        let word = (data[i] as u32) << 8;
+        sum = sum.wrapping_add(word);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
+}

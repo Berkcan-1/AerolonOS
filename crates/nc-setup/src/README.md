@@ -2,6 +2,6 @@
 
 ## lib.rs
 
-draw: once nc_ui::draw_backdrop, sonra sirayla ust bilgi, adim listesi (zaman cizgisi once, sonra kure ve noktalar), kart ve kart icerigi, alt bilgi cizilir.
-Kartin icerigi (padding = 3 unit) yukaridan asagi: altyazi, baslik, hap, metin satirlari; en altta durum satiri.
-Sag hizali yazilar text_width ile olculerek konumlanir. VERSION, env!("CARGO_PKG_VERSION") ile derleme zamaninda alinir.
+SetupState (adim, secili disk, disk listesi, ilerleme, changed), compute_card_layout (kart, dugmeler, rozet konumlari),
+update (klavye ve fare), draw (adima gore kart icerigi). format_size diskin boyutunu MB veya GB olarak yazar.
+unit = ekran yuksekligi / 36 (en az 10). Dokunulan ekran: MAX_SETUP_DISKS (8) disk gosterilebilir.

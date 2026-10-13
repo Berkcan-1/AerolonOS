@@ -2,16 +2,12 @@
 
 ## lib.rs
 
-- text_style: stroke_sixteenths = max(cap*16/20, 22); tracking = cap*yuzde/100.
-- draw_backdrop: ust-alt gradyan (BACKDROP_TOP -> BACKDROP_BOTTOM), ustte ortada yaricapi ekran yuksekliginin yuzde 95'i
-  olan gokyuzu pusu (BACKDROP_SKY, guc 52) ve sag altta aqua pusu (BACKDROP_AQUA, guc 44). Guclerin kucuk olmasi beyazligi korur.
-- rounded_distance: yuvarlatilmis dikdortgen icin isaretli mesafe (1/256 piksel). draw_panel, draw_shadow, draw_pill ve
-  draw_card bunu kullanir. Sadece koselerde karekok alinir.
-- circle_coverage: daire kenari icin 0..255 kapsama. draw_dot ve draw_orb kullanir.
-- draw_dot: yaricap piksel cinsindendir (eski surumde parilti yaricapiydi); strength 0..256 saydamlik.
-- draw_orb: govde ust-alt gradyandir; ustte elips seklinde beyaz yansima asagi dogru solar.
-- draw_pill: yaricap = yukseklik / 2; ust yarida beyaza dogru yuzde 40'a kadar aydinlatma.
+- text_style: stroke_sixteenths = max(cap*16/18, 22); tracking = cap*yuzde/100.
+- rounded_distance: yuvarlatilmis dikdortgen icin isaretli mesafe (1/256 piksel). Sadece koselerde karekok alinir.
+- panel_pixel: tek pikselin dolgu ve kenar kapsamasini hesaplar. draw_panel, derin ic satirlarda (kenardan yaricap+2
+  piksel iceride) yatay aralik olarak doldurur (opak ise fill_rect), kenar ve kose sutunlarinda panel_pixel kullanir.
 - draw_shadow: area, offset_y kadar asagi kaydirilir; kenardan spread piksel uzakliga kadar karesel solar. strength 0..255.
-- draw_card: golge (offset yaricap/2, yayilma yaricap*2.5, guc 26), beyaz panel, PANEL_BORDER kenar ve ust yuzde 36'da
-  BACKDROP_SKY ile en fazla yuzde 10 saydamlikta parlama.
-- draw_fading_line: orta noktadan uclara dogru karesel solan 1 piksellik cizgi.
+  area'nin derin ic kismi (yaricap+2 piksel iceride) atlanir.
+- draw_card: golge (offset 4, yayilma 12, guc 18) ve beyaz panel.
+- draw_badge, draw_radio, draw_button, draw_accent_button: kucuk kontrol bilesenleri. Dugme yuksekligi metin boyutunu belirler.
+- draw_cursor: 11x16 piksellik ok imleci (CURSOR_PIXELS: 1 = koyu kenar, 2 = beyaz ic).

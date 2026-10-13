@@ -108,6 +108,28 @@ fn rounded_distance(x: i32, y: i32, area: Rect, radius: i32) -> i64 {
     outside - radius256
 }
 
+fn panel_pixel(
+    canvas: &mut Canvas<'_>,
+    x: i32,
+    y: i32,
+    area: Rect,
+    radius: i32,
+    fill: u32,
+    fill_alpha: u32,
+    border: u32,
+    border_alpha: u32,
+) {
+    let distance = rounded_distance(x, y, area, radius);
+    let fill_coverage = (128 - distance).clamp(0, 255) as u32;
+    if fill_coverage > 0 {
+        canvas.blend_pixel(x, y, fill, (fill_alpha * fill_coverage / 255).min(255) as u8);
+    }
+    let ring = (256 - (distance + 128).abs()).clamp(0, 255) as u32;
+    if ring > 0 {
+        canvas.blend_pixel(x, y, border, (border_alpha * ring / 255).min(255) as u8);
+    }
+}
+
 pub fn draw_panel(
     canvas: &mut Canvas<'_>,
     area: Rect,
@@ -117,17 +139,30 @@ pub fn draw_panel(
     border: u32,
     border_alpha: u32,
 ) {
+    let margin = radius + 2;
+    let inner_start = area.x + margin;
+    let inner_end = area.x + area.width - margin;
+    let right = area.x + area.width;
     for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            let distance = rounded_distance(x, y, area, radius);
-            let fill_coverage = (128 - distance).clamp(0, 255) as u32;
-            if fill_coverage > 0 {
-                canvas.blend_pixel(x, y, fill, (fill_alpha * fill_coverage / 255).min(255) as u8);
+        let deep_row = y >= area.y + margin && y < area.y + area.height - margin && inner_end > inner_start;
+        if !deep_row {
+            for x in area.x..right {
+                panel_pixel(canvas, x, y, area, radius, fill, fill_alpha, border, border_alpha);
             }
-            let ring = (256 - (distance + 128).abs()).clamp(0, 255) as u32;
-            if ring > 0 {
-                canvas.blend_pixel(x, y, border, (border_alpha * ring / 255).min(255) as u8);
+            continue;
+        }
+        for x in area.x..inner_start {
+            panel_pixel(canvas, x, y, area, radius, fill, fill_alpha, border, border_alpha);
+        }
+        if fill_alpha >= 255 {
+            canvas.fill_rect(inner_start, y, inner_end - inner_start, 1, fill);
+        } else if fill_alpha > 0 {
+            for x in inner_start..inner_end {
+                canvas.blend_pixel(x, y, fill, fill_alpha as u8);
             }
+        }
+        for x in inner_end..right {
+            panel_pixel(canvas, x, y, area, radius, fill, fill_alpha, border, border_alpha);
         }
     }
 }
@@ -143,8 +178,13 @@ pub fn draw_shadow(
 ) {
     let shifted = Rect::new(area.x, area.y + offset_y, area.width, area.height);
     let reach = (spread as i64 * 256).max(1);
+    let margin = radius + 2;
     for y in shifted.y - spread..shifted.y + shifted.height + spread {
+        let deep_row = y >= area.y + margin && y < area.y + area.height - margin;
         for x in shifted.x - spread..shifted.x + shifted.width + spread {
+            if deep_row && x >= area.x + margin && x < area.x + area.width - margin {
+                continue;
+            }
             let distance = rounded_distance(x, y, shifted, radius).max(0);
             if distance >= reach {
                 continue;
@@ -181,8 +221,8 @@ pub fn draw_radio(canvas: &mut Canvas<'_>, center_x: i32, center_y: i32, radius:
     }
 }
 
-const CURSOR_WIDTH: usize = 11;
-const CURSOR_HEIGHT: usize = 16;
+pub const CURSOR_WIDTH: usize = 11;
+pub const CURSOR_HEIGHT: usize = 16;
 const CURSOR_PIXELS: [u8; CURSOR_WIDTH * CURSOR_HEIGHT] = [
     1,0,0,0,0,0,0,0,0,0,0,
     1,1,0,0,0,0,0,0,0,0,0,
@@ -246,4 +286,34 @@ pub fn draw_button(
         let ty = area.y + (area.height - style.cap_height) / 2;
         draw_text_color(canvas, text, tx, ty, &style, TEXT_PRIMARY);
     }
+}
+
+pub fn draw_accent_button(canvas: &mut Canvas<'_>, area: Rect, text: &str, is_hovered: bool, accent: u32) {
+    let radius = area.height / 3;
+    let bg = if is_hovered { lerp_color(accent, rgb(0, 0, 0), 40) } else { accent };
+    draw_panel(canvas, area, radius, bg, 255, bg, 0);
+    let style = text_style(area.height * 42 / 100, 30);
+    let tw = text_width(text, &style);
+    let tx = area.x + (area.width - tw) / 2;
+    let ty = area.y + (area.height - style.cap_height) / 2;
+    draw_text_color(canvas, text, tx, ty, &style, WHITE);
+}
+
+pub fn draw_progress_bar(canvas: &mut Canvas<'_>, area: Rect, progress_percent: u32, accent: u32) {
+    let radius = area.height / 3;
+    draw_panel(canvas, area, radius, rgb(241, 245, 249), 255, PANEL_BORDER, 255);
+    let fill_w = (area.width as u64 * progress_percent.min(100) as u64 / 100) as i32;
+    if fill_w > radius {
+        let fill_rect = Rect::new(area.x, area.y, fill_w, area.height);
+        draw_panel(canvas, fill_rect, radius, accent, 255, accent, 0);
+    }
+}
+
+pub fn draw_input_box(canvas: &mut Canvas<'_>, area: Rect, text: &str, focused: bool) {
+    let radius = area.height / 4;
+    let border = if focused { ACCENT_LINE } else { PANEL_BORDER };
+    draw_panel(canvas, area, radius, PANEL_FILL, 255, border, 255);
+    let style = text_style(area.height * 45 / 100, 30);
+    let text_y = area.y + (area.height - style.cap_height) / 2;
+    draw_text_color(canvas, text, area.x + area.height / 3, text_y, &style, TEXT_PRIMARY);
 }
