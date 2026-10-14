@@ -1,5 +1,9 @@
 # NetizenCore
 
+<img width="1377" height="768" alt="cre" src="https://github.com/user-attachments/assets/1547d582-d169-433f-9cef-ddbcf3693264" />
+
+
+
 **NetizenCore is an operating system built from scratch, without a Unix or Linux foundation.** Its bootloader is written in Assembly, while the kernel and all kernel modules are written entirely in Rust.
 
 The project is designed to boot in QEMU and currently implements a BIOS-based boot sequence, 64-bit processor initialization, graphics setup, and an animated startup experience leading to an initial setup screen.
