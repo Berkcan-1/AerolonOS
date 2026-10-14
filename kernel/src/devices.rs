@@ -19,6 +19,7 @@ impl DeviceManager {
         self.block_devices.push(device);
     }
 
+    #[allow(dead_code)]
     pub fn block_count(&self) -> usize {
         self.block_devices.len()
     }
@@ -50,7 +51,6 @@ impl DeviceManager {
             right_clicked: false,
         };
         let mut key = None;
-
         for input in &mut self.input_devices {
             let (m, k) = input.poll(width, height);
             mouse = m;
@@ -58,7 +58,6 @@ impl DeviceManager {
                 key = k;
             }
         }
-
         (mouse, key)
     }
 }

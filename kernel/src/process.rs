@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProcessState {
     Running,
@@ -10,6 +11,7 @@ pub enum ProcessState {
     Stopped,
 }
 
+#[allow(dead_code)]
 pub struct ProcessControlBlock {
     pub pid: usize,
     pub name: String,

@@ -268,8 +268,12 @@ name = "nc-app-settings"
 version = "0.1.0"
 dependencies = [
  "nc-app",
+ "nc-arch",
+ "nc-driver",
  "nc-font",
+ "nc-fs",
  "nc-gfx",
+ "nc-net",
  "nc-ui",
 ]
 
@@ -300,6 +304,11 @@ dependencies = [
  "nc-app",
  "nc-app-browser",
  "nc-app-files",
+ "nc-app-settings",
+ "nc-app-stopwatch",
+ "nc-app-system",
+ "nc-fs",
+ "nc-pkg",
 ]
 
 [[package]]
@@ -319,9 +328,19 @@ version = "0.1.0"
 dependencies = [
  "nc-app",
  "nc-font",
+ "nc-fs",
  "nc-gfx",
  "nc-hal",
+ "nc-math",
  "nc-ui",
+]
+
+[[package]]
+name = "nc-driver"
+version = "0.1.0"
+dependencies = [
+ "nc-arch",
+ "nc-hal",
 ]
 
 [[package]]
@@ -365,6 +384,7 @@ dependencies = [
  "nc-apps",
  "nc-arch",
  "nc-desktop",
+ "nc-driver",
  "nc-fs",
  "nc-gfx",
  "nc-hal",
@@ -428,6 +448,7 @@ dependencies = [
 name = "nc-setup"
 version = "0.1.0"
 dependencies = [
+ "nc-driver",
  "nc-font",
  "nc-gfx",
  "nc-hal",
@@ -451,6 +472,7 @@ name = "nc-storage"
 version = "0.1.0"
 dependencies = [
  "nc-arch",
+ "nc-driver",
  "nc-hal",
 ]
 

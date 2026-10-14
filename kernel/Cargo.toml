@@ -17,6 +17,7 @@ generic = ["dep:nc-platform-generic"]
 
 [dependencies]
 nc-hal = { path = "../crates/nc-hal" }
+nc-driver = { path = "../crates/nc-driver" }
 nc-arch = { path = "../crates/nc-arch" }
 nc-math = { path = "../crates/nc-math" }
 nc-mem = { path = "../crates/nc-mem" }

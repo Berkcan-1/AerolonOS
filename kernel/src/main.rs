@@ -109,14 +109,12 @@ pub extern "C" fn kernel_main() -> ! {
         heap_size / (1024 * 1024)
     );
 
-    let mut is_installed = false;
-    if let Some(mut dev) = nc_storage::scan_channel(0) {
-        let installed = nc_storage::is_installed(&mut dev);
-        if installed {
-            is_installed = true;
-        }
-    }
+let drv_reg = nc_driver::init();
+    log!(&active, "{}", drv_reg.status_log);
 
+    let is_installed = nc_storage::find_installed_disk().is_some();
+    
+   
     let mut screen = match new_canvas(&mut arena, width, height) {
         Some(canvas) => canvas,
         None => halt_forever(),
@@ -200,12 +198,12 @@ pub extern "C" fn kernel_main() -> ! {
             clock.sleep_until(now + FRAME_MS);
         }
 
+        // kernel/src/main.rs içindeki kurulum döngüsü:
         let mut written_partitions = false;
         loop {
             let now = clock.now_ms();
             let (mouse, key) = device_manager.poll_input(width as i32, height as i32);
             let action = setup_state.update(&mouse, key, width as i32, height as i32);
-
             if setup_state.step == 2 && !written_partitions {
                 written_partitions = true;
                 let stage2_slice = unsafe { core::slice::from_raw_parts(0x8800 as *const u8, 4096) };
@@ -213,21 +211,16 @@ pub extern "C" fn kernel_main() -> ! {
                     (&__kernel_bin_end as *const u8 as usize) - (&__kernel_bin_start as *const u8 as usize)
                 };
                 let kernel_slice = unsafe { core::slice::from_raw_parts(0x100000 as *const u8, kernel_bytes) };
-
-                if let Some(mut ata_dev) = nc_storage::scan_channel(0) {
-                    if ata_dev.info.device_type == DeviceType::HardDisk {
-                        let _ = nc_storage::install_to_disk(&mut ata_dev, stage2_slice, kernel_slice);
-                    }
+                if let Some(mut ata_dev) = nc_storage::find_install_target_disk(Some(setup_state.selected_disk as u8)) {
+                    let _ = nc_storage::install_to_disk(&mut ata_dev, stage2_slice, kernel_slice);
                 }
             }
-
             nc_setup::draw(&mut work_screen, active.name(), &setup_state, &mouse);
             screen.copy_rect_from(&work_screen, 0, 0, 0, 0, width as i32, height as i32);
             nc_ui::draw_cursor(&mut screen, mouse.x, mouse.y);
             unsafe {
                 present(&screen, &framebuffer);
             }
-
             if action == SetupAction::Reboot {
                 active.reboot();
             }

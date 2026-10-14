@@ -13,10 +13,16 @@ mbr_entry:
     mov es, ax
     mov ss, ax
     mov sp, 0x7C00
-    sti
     cld
 
     mov [boot_drive], dl
+
+    in al, 0x92
+    or al, 2
+    and al, 0xFE
+    out 0x92, al
+
+    sti
 
     mov ah, 0x41
     mov bx, 0x55AA
@@ -25,19 +31,26 @@ mbr_entry:
     cmp bx, 0xAA55
     jne disk_fail
 
-    mov word [sectors_left], 1200
+    mov word [dap_count], 8
+    mov word [dap_segment], 0x0880
+    mov dword [dap_lba], 2048
+    mov si, dap
+    mov dl, [boot_drive]
+    mov ah, 0x42
+    int 0x13
+    jc disk_fail
+
+    mov dword [dap_lba], 2056
+    mov word [dap_segment], 0x1000
+    mov word [sectors_left], 4096
+    mov dword [target_ptr], 0x00100000
 
 .read_loop:
     cmp word [sectors_left], 0
     jbe .done_reading
 
-    mov ax, [sectors_left]
-    cmp ax, 64
-    jbe .count_ok
-    mov ax, 64
-.count_ok:
-    mov [dap_count], ax
-    sub [sectors_left], ax
+    mov word [dap_count], 64
+    sub word [sectors_left], 64
 
     mov si, dap
     mov dl, [boot_drive]
@@ -45,18 +58,31 @@ mbr_entry:
     int 0x13
     jc disk_fail
 
-    mov ax, [dap_count]
-    shl ax, 5
-    add [dap_segment], ax
+    cli
+    lgdt [unreal_gdt_desc]
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+    mov bx, 0x08
+    mov ds, bx
+    mov es, bx
+    and al, 0xFE
+    mov cr0, eax
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
 
-    mov ax, [dap_count]
-    add [dap_lba], ax
-    adc word [dap_lba + 2], 0
+    mov esi, 0x00010000
+    mov edi, [target_ptr]
+    mov ecx, 8192
+    a32 rep movsd
+    mov [target_ptr], edi
+    sti
 
+    add dword [dap_lba], 64
     jmp .read_loop
 
 .done_reading:
-    mov dword [0x7C10], 595968
     mov dl, [boot_drive]
     jmp 0x0000:0x8800
 
@@ -75,23 +101,30 @@ disk_fail:
     hlt
     jmp .halt
 
-boot_drive:    db 0
-sectors_left:  dw 0
+boot_drive:   db 0
+sectors_left: dw 0
+target_ptr:   dd 0x00100000
 
 align 4
 dap:
     db 0x10
     db 0
-dap_count:
-    dw 0
-dap_offset:
-    dw 0x0000
-dap_segment:
-    dw 0x0880
-dap_lba:
-    dd 2048
-    dd 0
+dap_count:   dw 0
+dap_offset:  dw 0x0000
+dap_segment: dw 0x0880
+dap_lba:     dd 2048
+             dd 0
 
-message_fail:  db "NetizenCore: MBR okuma hatasi", 0
+align 8
+unreal_gdt:
+    dq 0
+    dq 0x00CF92000000FFFF
+unreal_gdt_end:
+
+unreal_gdt_desc:
+    dw unreal_gdt_end - unreal_gdt - 1
+    dd unreal_gdt
+
+message_fail: db "NetizenCore: MBR hatasi", 0
 
 times 446 - ($ - $$) db 0

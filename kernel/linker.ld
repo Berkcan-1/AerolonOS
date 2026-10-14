@@ -1,4 +1,5 @@
 ENTRY(_start)
+
 SECTIONS
 {
     . = 0x100000;
@@ -22,14 +23,17 @@ SECTIONS
         *(.got .got.*)
     }
 
-    .bss : ALIGN(16)
-    {
-        *(.bss .bss.*)
-        *(COMMON)
-    }
-
     . = ALIGN(16);
     __kernel_bin_end = .;
+
+    .bss : ALIGN(16)
+    {
+        __bss_start = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(16);
+        __bss_end = .;
+    }
 
     /DISCARD/ :
     {
