@@ -6,7 +6,7 @@ pub struct HardwareRng;
 static mut FALLBACK_STATE: u64 = 0;
 
 fn has_rdrand() -> bool {
-    unsafe { (__cpuid(1).ecx & (1 << 30)) != 0 }
+    (__cpuid(1).ecx & (1 << 30)) != 0
 }
 
 impl HardwareRng {

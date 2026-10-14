@@ -1,7 +1,9 @@
 extern crate alloc;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use nc_arch::rand::HardwareRng;
+
 use crate::tcp::{build_ethernet_frame, build_ipv4_packet, build_tcp_segment, TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN};
 use crate::tls13::Tls13;
 use crate::NetworkStack;
@@ -30,10 +32,12 @@ pub struct TcpHttpClient {
     pub local_seq: u32,
     pub remote_seq: u32,
     pub response_data: Vec<u8>,
+    pub raw_body: Vec<u8>,
     pub html_body: String,
     pub status_code: u16,
     pub https: bool,
     dns_tx_id: u16,
+    dns_cache: Vec<(String, [u8; 4])>,
     tls: Option<Tls13>,
     request_sent: bool,
     ticks: u32,
@@ -51,14 +55,16 @@ impl TcpHttpClient {
             path: String::new(),
             target_ip: [0, 0, 0, 0],
             local_port: 49152,
-            remote_port: 80,
+            remote_port: 443,
             local_seq: 1000,
             remote_seq: 0,
             response_data: Vec::new(),
+            raw_body: Vec::new(),
             html_body: String::new(),
             status_code: 0,
-            https: false,
+            https: true,
             dns_tx_id: 0x1A2B,
+            dns_cache: Vec::new(),
             tls: None,
             request_sent: false,
             ticks: 0,
@@ -76,25 +82,51 @@ impl TcpHttpClient {
 
     fn start(&mut self, url: &str, net: &mut NetworkStack) {
         let clean = url.trim();
-        let is_https = clean.starts_with("https://");
-        let without_proto = if let Some(stripped) = clean.strip_prefix("https://") {
-            stripped
-        } else if let Some(stripped) = clean.strip_prefix("http://") {
-            stripped
+        let lower_url = clean.to_ascii_lowercase();
+        let explicit_http = lower_url.starts_with("http://");
+        let explicit_https = lower_url.starts_with("https://");
+
+        let without_proto = if explicit_https {
+            &clean[8..]
+        } else if explicit_http {
+            &clean[7..]
         } else {
             clean
         };
-        let (host, path) = if let Some(slash_idx) = without_proto.find('/') {
+
+        let (authority, path) = if let Some(slash_idx) = without_proto.find('/') {
             (&without_proto[..slash_idx], &without_proto[slash_idx..])
         } else {
             (without_proto, "/")
         };
 
-        self.host = String::from(host);
-        self.path = String::from(path);
+        let (host_raw, custom_port) = if let Some(colon) = authority.rfind(':') {
+            let p_str = &authority[colon + 1..];
+            if let Ok(p) = p_str.parse::<u16>() {
+                (&authority[..colon], Some(p))
+            } else {
+                (authority, None)
+            }
+        } else {
+            (authority, None)
+        };
+
+        let host_lower = host_raw.trim().to_ascii_lowercase();
+        let is_ip = parse_ipv4(&host_lower).is_some();
+        let is_https = if explicit_http {
+            false
+        } else if explicit_https {
+            true
+        } else {
+            !is_ip
+        };
+
+        self.host = host_lower;
+        self.path = if path.is_empty() { String::from("/") } else { String::from(path) };
         self.https = is_https;
-        self.remote_port = if is_https { 443 } else { 80 };
+        self.remote_port = custom_port.unwrap_or(if is_https { 443 } else { 80 });
         self.response_data.clear();
+        self.raw_body.clear();
         self.html_body.clear();
         self.tls = None;
         self.request_sent = false;
@@ -102,15 +134,18 @@ impl TcpHttpClient {
         self.retries = 0;
         self.status_code = 0;
         self.port_counter = self.port_counter.wrapping_add(1);
-        self.local_port = 49152 + (self.port_counter % 4000);
+        self.dns_tx_id = self.dns_tx_id.wrapping_add(1);
+        self.local_port = 49152 + (self.port_counter % 12000);
         self.local_seq = HardwareRng::next_u64() as u32;
         self.remote_seq = 0;
+        net.inbox.clear();
 
         if !net.is_ready() {
             self.pending = Some(String::from(url));
             self.state = HttpState::WaitingNetwork;
             return;
         }
+
         self.begin(net);
     }
 
@@ -119,6 +154,10 @@ impl TcpHttpClient {
         self.retries = 0;
         if let Some(ip) = parse_ipv4(&self.host) {
             self.target_ip = ip;
+            self.state = HttpState::ConnectingSyn;
+            self.send_syn(net);
+        } else if let Some((_, cached_ip)) = self.dns_cache.iter().find(|(h, _)| h == &self.host) {
+            self.target_ip = *cached_ip;
             self.state = HttpState::ConnectingSyn;
             self.send_syn(net);
         } else {
@@ -174,7 +213,7 @@ impl TcpHttpClient {
     }
 
     pub fn poll(&mut self, net: &mut NetworkStack) {
-        for _ in 0..16 {
+        for _ in 0..64 {
             net.poll();
         }
         if matches!(self.state, HttpState::Idle | HttpState::Complete | HttpState::Failed) {
@@ -183,9 +222,15 @@ impl TcpHttpClient {
         }
         while !net.inbox.is_empty() {
             let pkt = net.inbox.remove(0);
+            let old_port = self.local_port;
             self.process_packet(&pkt, net);
+            if matches!(self.state, HttpState::Complete | HttpState::Failed) || self.local_port != old_port {
+                break;
+            }
         }
-        self.tick(net);
+        if !matches!(self.state, HttpState::Complete | HttpState::Failed) {
+            self.tick(net);
+        }
     }
 
     fn tick(&mut self, net: &mut NetworkStack) {
@@ -201,7 +246,7 @@ impl TcpHttpClient {
                 }
             }
             HttpState::ResolvingDns | HttpState::ConnectingSyn => {
-                if self.ticks % 90 == 0 {
+                if self.ticks % 60 == 0 {
                     self.retries += 1;
                     if self.retries > 5 {
                         self.state = HttpState::Failed;
@@ -217,8 +262,13 @@ impl TcpHttpClient {
                     }
                 }
             }
+            HttpState::ReceivingData => {
+                if is_http_response_complete(&self.response_data) || self.ticks > 120 {
+                    self.finish(net);
+                }
+            }
             _ => {
-                if self.ticks > 900 {
+                if self.ticks > 420 {
                     if self.response_data.is_empty() {
                         self.state = HttpState::Failed;
                     } else {
@@ -245,11 +295,17 @@ impl TcpHttpClient {
     }
 
     fn on_payload(&mut self, payload: &[u8], net: &mut NetworkStack) {
+        const MAX_RESPONSE_BYTES: usize = 512 * 1024;
         if !self.https {
             self.state = HttpState::ReceivingData;
-            self.response_data.extend_from_slice(payload);
+            let space = MAX_RESPONSE_BYTES.saturating_sub(self.response_data.len());
+            self.response_data.extend_from_slice(&payload[..payload.len().min(space)]);
+            if is_http_response_complete(&self.response_data) || self.response_data.len() >= MAX_RESPONSE_BYTES {
+                self.finish(net);
+            }
             return;
         }
+
         let mut out = Vec::new();
         let (ready, failed, closed, app) = match self.tls.as_mut() {
             Some(tls) => {
@@ -262,7 +318,11 @@ impl TcpHttpClient {
             self.send_data(net, &out);
         }
         if failed {
-            self.state = HttpState::Failed;
+            if !self.response_data.is_empty() {
+                self.finish(net);
+            } else {
+                self.state = HttpState::Failed;
+            }
             return;
         }
         if ready && !self.request_sent {
@@ -277,9 +337,10 @@ impl TcpHttpClient {
         }
         if !app.is_empty() {
             self.state = HttpState::ReceivingData;
-            self.response_data.extend_from_slice(&app);
+            let space = MAX_RESPONSE_BYTES.saturating_sub(self.response_data.len());
+            self.response_data.extend_from_slice(&app[..app.len().min(space)]);
         }
-        if closed {
+        if closed || is_http_response_complete(&self.response_data) || self.response_data.len() >= MAX_RESPONSE_BYTES {
             self.send_ack(net, TCP_ACK | TCP_FIN, &[]);
             self.local_seq = self.local_seq.wrapping_add(1);
             self.finish(net);
@@ -296,7 +357,6 @@ impl TcpHttpClient {
             return;
         }
         let proto = pkt[23];
-
         if proto == 17 {
             if self.state != HttpState::ResolvingDns || end < 42 {
                 return;
@@ -304,12 +364,19 @@ impl TcpHttpClient {
             if u16::from_be_bytes([pkt[36], pkt[37]]) != 5353 {
                 return;
             }
-            if let Some(ip) = crate::dns::parse_dns_response(&pkt[42..end]) {
-                self.target_ip = ip;
-                self.state = HttpState::ConnectingSyn;
-                self.ticks = 0;
-                self.retries = 0;
-                self.send_syn(net);
+            let dns_payload = &pkt[42..end];
+            if dns_payload.len() >= 2 && u16::from_be_bytes([dns_payload[0], dns_payload[1]]) == self.dns_tx_id {
+                if let Some(ip) = crate::dns::parse_dns_response(dns_payload) {
+                    if self.dns_cache.len() >= 16 {
+                        self.dns_cache.remove(0);
+                    }
+                    self.dns_cache.push((self.host.clone(), ip));
+                    self.target_ip = ip;
+                    self.state = HttpState::ConnectingSyn;
+                    self.ticks = 0;
+                    self.retries = 0;
+                    self.send_syn(net);
+                }
             }
             return;
         }
@@ -322,15 +389,21 @@ impl TcpHttpClient {
         if src_port != self.remote_port || dst_port != self.local_port {
             return;
         }
+
         let seq_in = u32::from_be_bytes([pkt[38], pkt[39], pkt[40], pkt[41]]);
         let flags = pkt[47];
         let payload_start = 34 + ((pkt[46] >> 4) as usize) * 4;
         let payload: &[u8] = if end > payload_start { &pkt[payload_start..end] } else { &[] };
 
         if flags & TCP_RST != 0 {
-            self.state = HttpState::Failed;
+            if !self.response_data.is_empty() {
+                self.finish(net);
+            } else {
+                self.state = HttpState::Failed;
+            }
             return;
         }
+
         if self.state == HttpState::ConnectingSyn {
             if flags & (TCP_SYN | TCP_ACK) == (TCP_SYN | TCP_ACK) {
                 self.remote_seq = seq_in.wrapping_add(1);
@@ -341,10 +414,15 @@ impl TcpHttpClient {
             }
             return;
         }
-        if matches!(self.state, HttpState::Idle | HttpState::Complete | HttpState::Failed | HttpState::ResolvingDns | HttpState::WaitingNetwork) {
+
+        if matches!(
+            self.state,
+            HttpState::Idle | HttpState::Complete | HttpState::Failed | HttpState::ResolvingDns | HttpState::WaitingNetwork
+        ) {
             return;
         }
 
+        let initial_port = self.local_port;
         if !payload.is_empty() {
             if seq_in != self.remote_seq {
                 self.send_ack(net, TCP_ACK, &[]);
@@ -354,7 +432,7 @@ impl TcpHttpClient {
             self.ticks = 0;
             self.send_ack(net, TCP_ACK, &[]);
             self.on_payload(payload, net);
-            if matches!(self.state, HttpState::Complete | HttpState::Failed) {
+            if matches!(self.state, HttpState::Complete | HttpState::Failed) || self.local_port != initial_port {
                 return;
             }
         }
@@ -381,27 +459,50 @@ impl TcpHttpClient {
     }
 
     fn finish(&mut self, net: &mut NetworkStack) {
-        let (status, body) = parse_http_payload(&self.response_data);
+        let (status, raw_bytes, html_str) = parse_http_payload_bytes(&self.response_data);
         self.status_code = status;
-        if matches!(status, 301 | 302 | 303 | 307 | 308) && self.redirects < 5 {
+        if matches!(status, 301 | 302 | 303 | 307 | 308) && self.redirects < 6 {
             if let Some(location) = header_value(&self.response_data, "location") {
                 let url = self.resolve_location(&location);
-                self.redirects += 1;
+                let next_redirects = self.redirects + 1;
                 self.start(&url, net);
+                self.redirects = next_redirects;
                 return;
             }
         }
-        if !body.is_empty() {
-            self.html_body = body;
-        } else {
-            self.html_body = String::from_utf8_lossy(&self.response_data).into_owned();
-        }
+        self.raw_body = raw_bytes;
+        self.html_body = html_str;
         self.state = HttpState::Complete;
     }
 
     pub fn decode_chunked_body(&self, data: &[u8]) -> Vec<u8> {
         decode_chunked_body(data)
     }
+}
+
+fn is_http_response_complete(raw: &[u8]) -> bool {
+    let Some(header_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return false;
+    };
+    let header_bytes = &raw[..header_end];
+    let body_bytes = &raw[header_end + 4..];
+    let Ok(header_str) = core::str::from_utf8(header_bytes) else {
+        return false;
+    };
+    for line in header_str.lines().skip(1) {
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim();
+            let val = v.trim();
+            if key.eq_ignore_ascii_case("content-length") {
+                if let Ok(expected_len) = val.parse::<usize>() {
+                    return body_bytes.len() >= expected_len;
+                }
+            } else if key.eq_ignore_ascii_case("transfer-encoding") && val.to_ascii_lowercase().contains("chunked") {
+                return body_bytes.windows(5).any(|w| w == b"0\r\n\r\n");
+            }
+        }
+    }
+    false
 }
 
 pub fn header_value(raw: &[u8], name: &str) -> Option<String> {
@@ -417,12 +518,80 @@ pub fn header_value(raw: &[u8], name: &str) -> Option<String> {
     None
 }
 
-pub fn parse_http_payload(raw_response: &[u8]) -> (u16, String) {
+fn decode_text_with_charset(bytes: &[u8], headers_lower: &str) -> String {
+    let explicit_latin5 = headers_lower.contains("iso-8859-9")
+        || headers_lower.contains("windows-1254")
+        || headers_lower.contains("iso-8859-1");
+    if !explicit_latin5 {
+        if let Ok(valid_utf8) = core::str::from_utf8(bytes) {
+            return String::from(valid_utf8);
+        }
+    }
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < 0x80 {
+            out.push(b as char);
+            i += 1;
+            continue;
+        }
+        if !explicit_latin5 {
+            if let Ok(s) = core::str::from_utf8(&bytes[i..(i + 4).min(bytes.len())]) {
+                if let Some(ch) = s.chars().next() {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                    continue;
+                }
+            } else if let Ok(s) = core::str::from_utf8(&bytes[i..(i + 3).min(bytes.len())]) {
+                if let Some(ch) = s.chars().next() {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                    continue;
+                }
+            } else if let Ok(s) = core::str::from_utf8(&bytes[i..(i + 2).min(bytes.len())]) {
+                if let Some(ch) = s.chars().next() {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                    continue;
+                }
+            }
+        }
+        let mapped = match b {
+            0xC7 => 'C',
+            0xE7 => 'c',
+            0xD0 => 'G',
+            0xF0 => 'g',
+            0xDD => 'I',
+            0xFD => 'i',
+            0xD6 => 'O',
+            0xF6 => 'o',
+            0xDE => 'S',
+            0xFE => 's',
+            0xDC => 'U',
+            0xFC => 'u',
+            0xA0 => ' ',
+            0xA9 => 'C',
+            0xAE => 'R',
+            0x93 | 0x94 => '"',
+            0x91 | 0x92 => '\'',
+            0x96 | 0x97 => '-',
+            other => other as char,
+        };
+        out.push(mapped);
+        i += 1;
+    }
+    out
+}
+
+pub fn parse_http_payload_bytes(raw_response: &[u8]) -> (u16, Vec<u8>, String) {
     let header_end = match raw_response.windows(4).position(|w| w == b"\r\n\r\n") {
         Some(pos) => pos,
-        None => return (0, String::new()),
+        None => {
+            let s = decode_text_with_charset(raw_response, "");
+            return (200, raw_response.to_vec(), s);
+        }
     };
-
     let header_str = core::str::from_utf8(&raw_response[..header_end]).unwrap_or("");
     let body_bytes = &raw_response[header_end + 4..];
 
@@ -436,41 +605,47 @@ pub fn parse_http_payload(raw_response: &[u8]) -> (u16, String) {
         })
         .unwrap_or(0);
 
-    let is_chunked = header_str.to_ascii_lowercase().contains("transfer-encoding: chunked");
-
+    let lower_headers = header_str.to_ascii_lowercase();
+    let is_chunked = lower_headers.contains("transfer-encoding: chunked");
     let clean_body = if is_chunked {
         decode_chunked_body(body_bytes)
     } else {
         body_bytes.to_vec()
     };
 
-    let html_string = String::from_utf8_lossy(&clean_body).into_owned();
-    (status_code, html_string)
+    let html_string = decode_text_with_charset(&clean_body, &lower_headers);
+    (status_code, clean_body, html_string)
+}
+
+pub fn parse_http_payload(raw_response: &[u8]) -> (u16, String) {
+    let (status, _, text) = parse_http_payload_bytes(raw_response);
+    (status, text)
 }
 
 pub fn decode_chunked_body(mut data: &[u8]) -> Vec<u8> {
     let mut result = Vec::new();
     loop {
+        while data.starts_with(b"\r\n") {
+            data = &data[2..];
+        }
         let crlf = match data.windows(2).position(|w| w == b"\r\n") {
             Some(pos) => pos,
             None => break,
         };
-
-        let hex_str = core::str::from_utf8(&data[..crlf]).unwrap_or("0");
-        let chunk_size = usize::from_str_radix(hex_str.trim(), 16).unwrap_or(0);
-
+        let hex_line = core::str::from_utf8(&data[..crlf]).unwrap_or("0");
+        let hex_only = hex_line.split(';').next().unwrap_or("0").trim();
+        let chunk_size = usize::from_str_radix(hex_only, 16).unwrap_or(0);
         if chunk_size == 0 {
             break;
         }
-
         let chunk_start = crlf + 2;
-        let chunk_end = chunk_start + chunk_size;
-
+        let chunk_end = chunk_start.saturating_add(chunk_size);
         if chunk_end > data.len() {
-            result.extend_from_slice(&data[chunk_start..]);
+            if chunk_start < data.len() {
+                result.extend_from_slice(&data[chunk_start..]);
+            }
             break;
         }
-
         result.extend_from_slice(&data[chunk_start..chunk_end]);
         data = if chunk_end + 2 <= data.len() {
             &data[chunk_end + 2..]
@@ -485,9 +660,15 @@ pub fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
     let mut parts = [0u8; 4];
     let mut count = 0;
     for segment in s.split('.') {
-        if count >= 4 { return None; }
+        if count >= 4 {
+            return None;
+        }
         parts[count] = segment.parse::<u8>().ok()?;
         count += 1;
     }
-    if count == 4 { Some(parts) } else { None }
+    if count == 4 {
+        Some(parts)
+    } else {
+        None
+    }
 }

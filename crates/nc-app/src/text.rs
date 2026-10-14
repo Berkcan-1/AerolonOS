@@ -3,13 +3,13 @@ use nc_gfx::Canvas;
 use nc_ui::draw_text_color;
 
 pub struct Line {
-    bytes: [u8; 56],
+    bytes: [u8; 128],
     length: usize,
 }
 
 impl Line {
     pub fn new() -> Line {
-        Line { bytes: [0; 56], length: 0 }
+        Line { bytes: [0; 128], length: 0 }
     }
 
     pub fn text(&mut self, value: &str) -> &mut Line {

@@ -1,4 +1,5 @@
 #![no_std]
+
 extern crate alloc;
 
 pub mod icon;
@@ -8,9 +9,9 @@ pub mod theme;
 use alloc::boxed::Box;
 use alloc::string::String;
 use nc_gfx::{Canvas, Rect};
-pub use nc_hal::KeyCode;
 
 pub use icon::{draw_icon, Icon};
+pub use nc_hal::KeyCode;
 
 pub struct AppInfo {
     pub id: String,
@@ -22,7 +23,14 @@ pub struct AppInfo {
 }
 
 impl AppInfo {
-    pub fn new(id: &str, name: &str, version: &str, icon: Icon, width_units: i32, height_units: i32) -> AppInfo {
+    pub fn new(
+        id: &str,
+        name: &str,
+        version: &str,
+        icon: Icon,
+        width_units: i32,
+        height_units: i32,
+    ) -> AppInfo {
         AppInfo {
             id: String::from(id),
             name: String::from(name),
@@ -38,11 +46,30 @@ impl AppInfo {
 pub struct Settings {
     pub wallpaper: usize,
     pub accent: usize,
+    pub wallpaper_animated: bool,
+    pub wallpaper_speed: u8,
+    pub custom_wallpaper: Option<u8>,
+    pub glass_blur: u8,
+    pub dock_auto_hide: bool,
+    pub launch_anim_speed: u8,
+    pub wifi_enabled: bool,
+    pub bluetooth_enabled: bool,
 }
 
 impl Settings {
     pub const fn new() -> Settings {
-        Settings { wallpaper: 0, accent: 0 }
+        Settings {
+            wallpaper: 0,
+            accent: 0,
+            wallpaper_animated: true,
+            wallpaper_speed: 2,
+            custom_wallpaper: None,
+            glass_blur: 2,
+            dock_auto_hide: true,
+            launch_anim_speed: 2,
+            wifi_enabled: true,
+            bluetooth_enabled: true,
+        }
     }
 
     pub fn accent_color(&self) -> u32 {
@@ -84,9 +111,21 @@ pub struct Update {
 }
 
 impl Update {
-    pub const NONE: Update = Update { redraw: false, close: false, install_app: None };
-    pub const REDRAW: Update = Update { redraw: true, close: false, install_app: None };
-    pub const CLOSE: Update = Update { redraw: true, close: true, install_app: None };
+    pub const NONE: Update = Update {
+        redraw: false,
+        close: false,
+        install_app: None,
+    };
+    pub const REDRAW: Update = Update {
+        redraw: true,
+        close: false,
+        install_app: None,
+    };
+    pub const CLOSE: Update = Update {
+        redraw: true,
+        close: true,
+        install_app: None,
+    };
 
     pub fn install(app: Box<dyn App>) -> Update {
         Update {

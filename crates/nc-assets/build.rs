@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MAX_SIDE: u32 = 256;
+const MAX_SIDE: u32 = 192;
 
 struct Image {
     width: u32,

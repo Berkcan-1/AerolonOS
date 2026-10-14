@@ -8,6 +8,7 @@ pub mod tcp;
 pub mod tls;
 pub mod tls13;
 pub mod tls_engine;
+pub mod wireless;
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -82,7 +83,13 @@ pub fn scan_pci_e1000() -> Option<PciDeviceInfo> {
                 let vendor_id = (vendor_dev & 0xFFFF) as u16;
                 let device_id = ((vendor_dev >> 16) & 0xFFFF) as u16;
 
-                if vendor_id == E1000_VENDOR_ID && device_id == E1000_DEVICE_ID {
+                let is_supported_e1000 = vendor_id == E1000_VENDOR_ID
+                    && matches!(
+                        device_id,
+                        0x100E | 0x100F | 0x1004 | 0x10D3 | 0x1502 | 0x153A | 0x15B7 | 0x15B8
+                    );
+                if is_supported_e1000 {
+                    
                     let bar0 = pci_read_config_32(bus, dev, func, 0x10);
                     let irq_info = pci_read_config_32(bus, dev, func, 0x3C);
                     let irq = (irq_info & 0xFF) as u8;
@@ -374,6 +381,7 @@ impl NetworkStack {
     }
 
     pub fn poll(&mut self) {
+        wireless::global().poll();
         self.retry_dhcp();
         let rx_opt = if let Some(ref mut drv) = self.driver {
             drv.poll_rx()
@@ -480,13 +488,17 @@ impl NetworkStack {
 }
 
 static mut GLOBAL_STACK: Option<NetworkStack> = None;
+static mut STACK_MAGIC: u64 = 0;
 
 pub fn global() -> &'static mut NetworkStack {
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(GLOBAL_STACK);
-        if slot.is_none() {
-            *slot = Some(NetworkStack::new());
+        let slot = core::ptr::addr_of_mut!(GLOBAL_STACK);
+        let magic = core::ptr::addr_of_mut!(STACK_MAGIC);
+        if core::ptr::read_volatile(magic) != 0x4E45_545F_494E_4954 {
+            core::ptr::write(slot, None);
+            core::ptr::write(slot, Some(NetworkStack::new()));
+            core::ptr::write(magic, 0x4E45_545F_494E_4954);
         }
-        slot.as_mut().unwrap()
+        (*slot).as_mut().unwrap()
     }
 }

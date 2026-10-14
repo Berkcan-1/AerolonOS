@@ -64,6 +64,7 @@ pub struct Canvas<'a> {
     pixels: &'a mut [u32],
     width: usize,
     height: usize,
+    clip: Rect,
 }
 
 impl<'a> Canvas<'a> {
@@ -71,7 +72,12 @@ impl<'a> Canvas<'a> {
         if width == 0 || height == 0 || pixels.len() < width * height {
             return None;
         }
-        Some(Canvas { pixels, width, height })
+        Some(Canvas {
+            pixels,
+            width,
+            height,
+            clip: Rect::new(0, 0, width as i32, height as i32),
+        })
     }
 
     pub fn width(&self) -> usize {
@@ -80,6 +86,22 @@ impl<'a> Canvas<'a> {
 
     pub fn height(&self) -> usize {
         self.height
+    }
+
+    pub fn set_clip(&mut self, rect: Rect) {
+        let x0 = rect.x.clamp(0, self.width as i32);
+        let y0 = rect.y.clamp(0, self.height as i32);
+        let x1 = (rect.x + rect.width.max(0)).clamp(x0, self.width as i32);
+        let y1 = (rect.y + rect.height.max(0)).clamp(y0, self.height as i32);
+        self.clip = Rect::new(x0, y0, x1 - x0, y1 - y0);
+    }
+
+    pub fn reset_clip(&mut self) {
+        self.clip = Rect::new(0, 0, self.width as i32, self.height as i32);
+    }
+
+    pub fn clip_rect(&self) -> Rect {
+        self.clip
     }
 
     pub fn pixels(&self) -> &[u32] {
@@ -120,11 +142,12 @@ impl<'a> Canvas<'a> {
             return;
         }
         let radius_squared = (radius as i64) * (radius as i64);
-        let x_start = (center_x - radius).max(0);
-        let x_end = (center_x + radius).min(self.width as i32 - 1);
-        let y_start = (center_y - radius).max(0);
-        let y_end = (center_y + radius).min(self.height as i32 - 1);
+        let x_start = (center_x - radius).max(self.clip.x);
+        let x_end = (center_x + radius).min(self.clip.x + self.clip.width - 1);
+        let y_start = (center_y - radius).max(self.clip.y);
+        let y_end = (center_y + radius).min(self.clip.y + self.clip.height - 1);
         let strength = strength.min(256);
+
         for y in y_start..=y_end {
             for x in x_start..=x_end {
                 let dx = (x - center_x) as i64;
@@ -147,11 +170,12 @@ impl<'a> Canvas<'a> {
             return;
         }
         let radius_squared = (radius as i64) * (radius as i64);
-        let x_start = (center_x - radius).max(0);
-        let x_end = (center_x + radius).min(self.width as i32 - 1);
-        let y_start = (center_y - radius).max(0);
-        let y_end = (center_y + radius).min(self.height as i32 - 1);
+        let x_start = (center_x - radius).max(self.clip.x);
+        let x_end = (center_x + radius).min(self.clip.x + self.clip.width - 1);
+        let y_start = (center_y - radius).max(self.clip.y);
+        let y_end = (center_y + radius).min(self.clip.y + self.clip.height - 1);
         let strength = strength.min(256);
+
         for y in y_start..=y_end {
             for x in x_start..=x_end {
                 let dx = (x - center_x) as i64;
@@ -171,19 +195,28 @@ impl<'a> Canvas<'a> {
     }
 
     pub fn fill_rect(&mut self, x: i32, y: i32, width: i32, height: i32, color: u32) {
-        let x_start = x.max(0);
-        let y_start = y.max(0);
-        let x_end = (x + width).min(self.width as i32);
-        let y_end = (y + height).min(self.height as i32);
+        let x_start = x.max(self.clip.x);
+        let y_start = y.max(self.clip.y);
+        let x_end = (x + width).min(self.clip.x + self.clip.width);
+        let y_end = (y + height).min(self.clip.y + self.clip.height);
+        if x_end <= x_start || y_end <= y_start {
+            return;
+        }
         for row in y_start..y_end {
+            let row_off = row as usize * self.width;
             for column in x_start..x_end {
-                self.pixels[row as usize * self.width + column as usize] = color;
+                self.pixels[row_off + column as usize] = color;
             }
         }
     }
 
     pub fn blend_pixel(&mut self, x: i32, y: i32, color: u32, alpha: u8) {
-        if alpha == 0 || x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+        if alpha == 0
+            || x < self.clip.x
+            || y < self.clip.y
+            || x >= self.clip.x + self.clip.width
+            || y >= self.clip.y + self.clip.height
+        {
             return;
         }
         let index = y as usize * self.width + x as usize;
@@ -219,8 +252,15 @@ impl<'a> Canvas<'a> {
         width: i32,
         height: i32,
     ) {
-        let first = 0.max(-source_x).max(-destination_x);
-        let last = width.min(source.width as i32 - source_x).min(self.width as i32 - destination_x);
+        let min_dst_x = self.clip.x;
+        let max_dst_x = self.clip.x + self.clip.width;
+        let min_dst_y = self.clip.y;
+        let max_dst_y = self.clip.y + self.clip.height;
+
+        let first = 0.max(-source_x).max(min_dst_x - destination_x);
+        let last = width
+            .min(source.width as i32 - source_x)
+            .min(max_dst_x - destination_x);
         if last <= first {
             return;
         }
@@ -228,7 +268,11 @@ impl<'a> Canvas<'a> {
         for row in 0..height {
             let from_y = source_y + row;
             let to_y = destination_y + row;
-            if from_y < 0 || to_y < 0 || from_y >= source.height as i32 || to_y >= self.height as i32 {
+            if from_y < 0
+                || to_y < min_dst_y
+                || from_y >= source.height as i32
+                || to_y >= max_dst_y
+            {
                 continue;
             }
             let from = from_y as usize * source.width + (source_x + first) as usize;
@@ -261,6 +305,7 @@ pub unsafe fn present_region(canvas: &Canvas, framebuffer: &FramebufferInfo, are
     if x_end <= x_start || y_end <= y_start {
         return;
     }
+
     let base = framebuffer.address as usize as *mut u8;
     let pitch = framebuffer.pitch as usize;
     let native = framebuffer.bpp == 32
@@ -272,12 +317,26 @@ pub unsafe fn present_region(canvas: &Canvas, framebuffer: &FramebufferInfo, are
         && framebuffer.blue_size == 8;
     let source = canvas.pixels();
     let stride = canvas.width();
+
     for y in y_start..y_end {
         let row = base.add(y * pitch) as *mut u32;
         let source_row = &source[y * stride + x_start..y * stride + x_end];
-        for (offset, value) in source_row.iter().enumerate() {
-            let output = if native { *value } else { pack(*value, framebuffer) };
-            core::ptr::write_volatile(row.add(x_start + offset), output);
+        if native {
+            let dst_ptr = row.add(x_start);
+            let len = source_row.len();
+            let pairs = len / 2;
+            let src64 = source_row.as_ptr() as *const u64;
+            let dst64 = dst_ptr as *mut u64;
+            for i in 0..pairs {
+                core::ptr::write_volatile(dst64.add(i), *src64.add(i));
+            }
+            if (len & 1) != 0 {
+                core::ptr::write_volatile(dst_ptr.add(len - 1), source_row[len - 1]);
+            }
+        } else {
+            for (offset, value) in source_row.iter().enumerate() {
+                core::ptr::write_volatile(row.add(x_start + offset), pack(*value, framebuffer));
+            }
         }
     }
 }

@@ -114,36 +114,43 @@ pub struct Tls13 {
     secret: StaticSecret,
     public: [u8; 32],
     random: [u8; 32],
+    session_id: [u8; 32],
     transcript: Sha256,
     hs_secret: [u8; 32],
     c_hs_secret: [u8; 32],
     write: Option<Keys>,
     read: Option<Keys>,
     rx: Vec<u8>,
+    hs_rx: Vec<u8>,
 }
 
 impl Tls13 {
     pub fn new(host: &str) -> Tls13 {
         let mut random = [0u8; 32];
         let mut private = [0u8; 32];
+        let mut session_id = [0u8; 32];
         HardwareRng::fill_bytes(&mut random);
         HardwareRng::fill_bytes(&mut private);
+        HardwareRng::fill_bytes(&mut session_id);
         let secret = StaticSecret::from(private);
         let public = PublicKey::from(&secret).to_bytes();
+        let clean_host = host.split(':').next().unwrap_or(host);
         Tls13 {
             state: Tls13State::Start,
             app_in: Vec::new(),
             closed: false,
-            host: String::from(host),
+            host: String::from(clean_host),
             secret,
             public,
             random,
+            session_id,
             transcript: Sha256::new(),
             hs_secret: [0; 32],
             c_hs_secret: [0; 32],
             write: None,
             read: None,
             rx: Vec::new(),
+            hs_rx: Vec::new(),
         }
     }
 
@@ -170,7 +177,6 @@ impl Tls13 {
 
     pub fn client_hello(&mut self) -> Vec<u8> {
         let mut ext = Vec::new();
-
         let name = self.host.as_bytes();
         let mut sni = Vec::new();
         sni.extend_from_slice(&((name.len() + 3) as u16).to_be_bytes());
@@ -178,11 +184,14 @@ impl Tls13 {
         sni.extend_from_slice(&(name.len() as u16).to_be_bytes());
         sni.extend_from_slice(name);
         Self::push_ext(&mut ext, 0x0000, &sni);
-
         Self::push_ext(&mut ext, 0x000a, &[0x00, 0x02, 0x00, 0x1d]);
-        Self::push_ext(&mut ext, 0x000d, &[0x00, 0x08, 0x04, 0x03, 0x08, 0x04, 0x04, 0x01, 0x08, 0x07]);
+        Self::push_ext(
+            &mut ext,
+            0x000d,
+            &[0x00, 0x0c, 0x04, 0x03, 0x08, 0x04, 0x04, 0x01, 0x05, 0x03, 0x08, 0x05, 0x08, 0x07],
+        );
         Self::push_ext(&mut ext, 0x002b, &[0x02, 0x03, 0x04]);
-
+        Self::push_ext(&mut ext, 0x002d, &[0x01, 0x01]);
         let mut share = Vec::new();
         share.extend_from_slice(&36u16.to_be_bytes());
         share.extend_from_slice(&0x001du16.to_be_bytes());
@@ -193,7 +202,8 @@ impl Tls13 {
         let mut body = Vec::new();
         body.extend_from_slice(&[0x03, 0x03]);
         body.extend_from_slice(&self.random);
-        body.push(0);
+        body.push(32);
+        body.extend_from_slice(&self.session_id);
         body.extend_from_slice(&[0x00, 0x02, 0x13, 0x03]);
         body.extend_from_slice(&[0x01, 0x00]);
         body.extend_from_slice(&(ext.len() as u16).to_be_bytes());
@@ -250,14 +260,12 @@ impl Tls13 {
             None => return false,
         };
         self.transcript.update(message);
-
         let shared = self.secret.diffie_hellman(&PublicKey::from(peer));
         let zero = [0u8; 32];
         let early = extract(&zero, &zero);
         let empty = Sha256::digest(b"");
         let derived = expand32(&early, "derived", empty.as_slice());
         self.hs_secret = extract(&derived, shared.as_bytes());
-
         let hash = self.transcript_hash();
         let client = expand32(&self.hs_secret, "c hs traffic", &hash);
         let server = expand32(&self.hs_secret, "s hs traffic", &hash);
@@ -277,9 +285,11 @@ impl Tls13 {
         let master = extract(&derived, &zero);
         let client_app = expand32(&master, "c ap traffic", &hash);
         let server_app = expand32(&master, "s ap traffic", &hash);
-
         let finished_key = expand32(&self.c_hs_secret, "finished", &[]);
         let (verify, _) = Hkdf::<Sha256>::extract(Some(&finished_key[..]), &hash[..]);
+
+        out.extend_from_slice(&[20, 3, 3, 0, 1, 1]);
+
         let mut finished = Vec::new();
         finished.extend_from_slice(&[20, 0, 0, 32]);
         finished.extend_from_slice(verify.as_slice());
@@ -291,23 +301,36 @@ impl Tls13 {
         self.state = Tls13State::Ready;
     }
 
-    fn on_handshake_messages(&mut self, data: &[u8], out: &mut Vec<u8>) {
-        let mut offset = 0;
-        while offset + 4 <= data.len() {
-            let length = ((data[offset + 1] as usize) << 16) | ((data[offset + 2] as usize) << 8) | data[offset + 3] as usize;
-            let end = offset + 4 + length;
-            if end > data.len() {
+    fn process_handshake_buffer(&mut self, out: &mut Vec<u8>) {
+        loop {
+            if self.hs_rx.len() < 4 {
                 break;
             }
-            let message = &data[offset..end];
-            if self.state == Tls13State::WaitFlight {
-                if data[offset] == 20 {
-                    self.on_server_finished(message, out);
-                } else {
-                    self.transcript.update(message);
-                }
+            let msg_type = self.hs_rx[0];
+            let length = ((self.hs_rx[1] as usize) << 16)
+                | ((self.hs_rx[2] as usize) << 8)
+                | (self.hs_rx[3] as usize);
+            let total_len = 4 + length;
+            if self.hs_rx.len() < total_len {
+                break;
             }
-            offset = end;
+            let message: Vec<u8> = self.hs_rx.drain(..total_len).collect();
+            match self.state {
+                Tls13State::WaitServerHello => {
+                    if !self.on_server_hello(&message) {
+                        self.state = Tls13State::Failed;
+                        break;
+                    }
+                }
+                Tls13State::WaitFlight => {
+                    if msg_type == 20 {
+                        self.on_server_finished(&message, out);
+                    } else {
+                        self.transcript.update(&message);
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -317,14 +340,15 @@ impl Tls13 {
         match kind {
             20 => {}
             21 => {
-                self.state = Tls13State::Failed;
+                if body.len() >= 2 && body[1] == 0 {
+                    self.closed = true;
+                } else {
+                    self.state = Tls13State::Failed;
+                }
             }
             22 => {
-                if self.state == Tls13State::WaitServerHello {
-                    if !self.on_server_hello(body) {
-                        self.state = Tls13State::Failed;
-                    }
-                }
+                self.hs_rx.extend_from_slice(body);
+                self.process_handshake_buffer(out);
             }
             23 => {
                 let opened = match self.read.as_mut() {
@@ -339,7 +363,10 @@ impl Tls13 {
                     }
                 };
                 match inner_type {
-                    22 => self.on_handshake_messages(&plain, out),
+                    22 => {
+                        self.hs_rx.extend_from_slice(&plain);
+                        self.process_handshake_buffer(out);
+                    }
                     23 => self.app_in.extend_from_slice(&plain),
                     21 => self.closed = true,
                     _ => {}

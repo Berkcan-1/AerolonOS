@@ -52,20 +52,21 @@ pub fn build_ipv4_packet(
     let total_len = (header_len + payload.len()) as u16;
     let mut pkt = Vec::with_capacity(header_len + payload.len());
 
-    pkt.push(0x45); // Version 4, IHL 5
-    pkt.push(0x00); // DSCP / ECN
+    pkt.push(0x45);
+    pkt.push(0x00);
     pkt.extend_from_slice(&total_len.to_be_bytes());
-    pkt.extend_from_slice(&0x1234u16.to_be_bytes()); // Packet ID
-    pkt.extend_from_slice(&0x4000u16.to_be_bytes()); // Flags (Don't Fragment)
-    pkt.push(64);   // TTL
-    pkt.push(protocol); // 6 for TCP
-    pkt.extend_from_slice(&[0, 0]); // Checksum placeholder
+    pkt.extend_from_slice(&0x1234u16.to_be_bytes());
+    pkt.extend_from_slice(&0x4000u16.to_be_bytes());
+    pkt.push(64);
+    pkt.push(protocol);
+    pkt.extend_from_slice(&[0, 0]);
     pkt.extend_from_slice(&src_ip);
     pkt.extend_from_slice(&dst_ip);
 
     let csum = compute_checksum(&pkt);
     pkt[10] = (csum >> 8) as u8;
     pkt[11] = (csum & 0xFF) as u8;
+
     pkt.extend_from_slice(payload);
     pkt
 }
@@ -90,7 +91,9 @@ pub fn build_http_get(host: &str, path: &str) -> Vec<u8> {
     req.extend_from_slice(path.as_bytes());
     req.extend_from_slice(b" HTTP/1.1\r\nHost: ");
     req.extend_from_slice(host.as_bytes());
-    req.extend_from_slice(b"\r\nUser-Agent: NetizenCore/1.0\r\nAccept: text/html\r\nAccept-Language: en\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n");
+    req.extend_from_slice(
+        b"\r\nUser-Agent: Mozilla/5.0 (X11; NetizenCore x86_64) AppleWebKit/537.36\r\nAccept: text/html,text/css,image/png,image/jpeg,image/*,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.9\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
+    );
     req
 }
 
@@ -112,20 +115,18 @@ pub fn build_tcp_segment(
     tcp_pkt.extend_from_slice(&dst_port.to_be_bytes());
     tcp_pkt.extend_from_slice(&seq.to_be_bytes());
     tcp_pkt.extend_from_slice(&ack.to_be_bytes());
-    tcp_pkt.push(0x50); // Data offset (5 * 4 = 20 bytes)
+    tcp_pkt.push(0x50);
     tcp_pkt.push(flags);
-    tcp_pkt.extend_from_slice(&8192u16.to_be_bytes()); // Window Size
-    tcp_pkt.extend_from_slice(&[0, 0]); // Checksum placeholder
-    tcp_pkt.extend_from_slice(&[0, 0]); // Urgent Pointer
-
+    tcp_pkt.extend_from_slice(&32768u16.to_be_bytes());
+    tcp_pkt.extend_from_slice(&[0, 0]);
+    tcp_pkt.extend_from_slice(&[0, 0]);
     tcp_pkt.extend_from_slice(payload);
 
-    // Compute TCP Pseudo-header Checksum
     let mut pseudo = Vec::new();
     pseudo.extend_from_slice(&src_ip);
     pseudo.extend_from_slice(&dst_ip);
     pseudo.push(0);
-    pseudo.push(6); // Protocol TCP = 6
+    pseudo.push(6);
     pseudo.extend_from_slice(&(total_tcp_len as u16).to_be_bytes());
     pseudo.extend_from_slice(&tcp_pkt);
 

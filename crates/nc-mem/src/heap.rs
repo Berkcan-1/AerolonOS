@@ -3,57 +3,6 @@ use core::cell::UnsafeCell;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-struct Spinlock<T> {
-    locked: AtomicBool,
-    data: UnsafeCell<T>,
-}
-
-unsafe impl<T: Send> Sync for Spinlock<T> {}
-unsafe impl<T: Send> Send for Spinlock<T> {}
-
-impl<T> Spinlock<T> {
-    const fn new(data: T) -> Self {
-        Self {
-            locked: AtomicBool::new(false),
-            data: UnsafeCell::new(data),
-        }
-    }
-
-    fn lock(&self) -> SpinlockGuard<'_, T> {
-        while self
-            .locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
-        SpinlockGuard { lock: self }
-    }
-}
-
-struct SpinlockGuard<'a, T> {
-    lock: &'a Spinlock<T>,
-}
-
-impl<'a, T> core::ops::Deref for SpinlockGuard<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        unsafe { &*self.lock.data.get() }
-    }
-}
-
-impl<'a, T> core::ops::DerefMut for SpinlockGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.lock.data.get() }
-    }
-}
-
-impl<'a, T> Drop for SpinlockGuard<'a, T> {
-    fn drop(&mut self) {
-        self.lock.locked.store(false, Ordering::Release);
-    }
-}
-
 struct FreeBlock {
     size: usize,
     next: *mut FreeBlock,
@@ -63,26 +12,59 @@ struct HeapState {
     head: *mut FreeBlock,
 }
 
-unsafe impl Send for HeapState {}
+pub struct LockedHeap {
+    lock: AtomicBool,
+    state: UnsafeCell<HeapState>,
+}
 
-impl HeapState {
-    const fn empty() -> Self {
-        Self { head: null_mut() }
-    }
+unsafe impl Sync for LockedHeap {}
 
-    unsafe fn init(&mut self, start: usize, size: usize) {
-        let aligned_start = (start + 15) & !15;
-        let usable_size = (start + size).saturating_sub(aligned_start);
-        if usable_size >= 32 {
-            let block = aligned_start as *mut FreeBlock;
-            (*block).size = usable_size;
-            (*block).next = null_mut();
-            self.head = block;
+impl LockedHeap {
+    pub const fn empty() -> Self {
+        LockedHeap {
+            lock: AtomicBool::new(false),
+            state: UnsafeCell::new(HeapState { head: null_mut() }),
         }
     }
 
+    pub unsafe fn init(&self, base: usize, size: usize) {
+        let state = &mut *self.state.get();
+        state.init(base, size);
+    }
+
+    fn acquire(&self) {
+        while self
+            .lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn release(&self) {
+        self.lock.store(false, Ordering::Release);
+    }
+}
+
+impl HeapState {
+    unsafe fn init(&mut self, base: usize, size: usize) {
+        let aligned_base = (base + 15) & !15;
+        let diff = aligned_base.saturating_sub(base);
+        let actual_size = size.saturating_sub(diff) & !15;
+        if actual_size < 32 {
+            self.head = null_mut();
+            return;
+        }
+        let block = aligned_base as *mut FreeBlock;
+        (*block).size = actual_size;
+        (*block).next = null_mut();
+        self.head = block;
+    }
+
     unsafe fn alloc(&mut self, layout: Layout) -> *mut u8 {
-        let needed_payload = (layout.size() + 15) & !15;
+        let align = layout.align().max(16);
+        let needed_payload = (layout.size().max(1) + (align - 1)) & !(align - 1);
         let needed_total = needed_payload + 16;
 
         let mut prev: *mut FreeBlock = null_mut();
@@ -91,7 +73,7 @@ impl HeapState {
         while !curr.is_null() {
             let block_size = (*curr).size;
             if block_size >= needed_total {
-                if block_size >= needed_total + 32 {
+                let actual_size = if block_size >= needed_total + 32 {
                     let next_block = (curr as usize + needed_total) as *mut FreeBlock;
                     (*next_block).size = block_size - needed_total;
                     (*next_block).next = (*curr).next;
@@ -101,22 +83,23 @@ impl HeapState {
                     } else {
                         (*prev).next = next_block;
                     }
+                    needed_total
                 } else {
                     if prev.is_null() {
                         self.head = (*curr).next;
                     } else {
                         (*prev).next = (*curr).next;
                     }
-                }
+                    block_size
+                };
 
-                *(curr as *mut usize) = needed_total;
+                *(curr as *mut usize) = actual_size;
+                *((curr as usize + 8) as *mut usize) = 0;
                 return (curr as usize + 16) as *mut u8;
             }
-
             prev = curr;
             curr = (*curr).next;
         }
-
         null_mut()
     }
 
@@ -124,9 +107,11 @@ impl HeapState {
         if ptr.is_null() {
             return;
         }
-
         let block = (ptr as usize - 16) as *mut FreeBlock;
         let block_size = *(block as *mut usize);
+        if block_size < 32 {
+            return;
+        }
         (*block).size = block_size;
         (*block).next = null_mut();
 
@@ -136,55 +121,53 @@ impl HeapState {
         }
 
         if (block as usize) < (self.head as usize) {
-            (*block).next = self.head;
-            self.head = block;
-        } else {
-            let mut curr = self.head;
-            while !(*curr).next.is_null() && ((*curr).next as usize) < (block as usize) {
-                curr = (*curr).next;
+            if (block as usize) + block_size == (self.head as usize) {
+                (*block).size += (*self.head).size;
+                (*block).next = (*self.head).next;
+                self.head = block;
+            } else {
+                (*block).next = self.head;
+                self.head = block;
             }
-            (*block).next = (*curr).next;
-            (*curr).next = block;
+            return;
         }
 
         let mut curr = self.head;
-        while !curr.is_null() && !(*curr).next.is_null() {
-            let next = (*curr).next;
-            if curr as usize + (*curr).size == next as usize {
-                (*curr).size += (*next).size;
-                (*curr).next = (*next).next;
+        while !(*curr).next.is_null() && ((*curr).next as usize) < (block as usize) {
+            curr = (*curr).next;
+        }
+
+        if curr == block || (*curr).next == block {
+            return;
+        }
+
+        (*block).next = (*curr).next;
+        (*curr).next = block;
+
+        let mut scan = self.head;
+        while !scan.is_null() && !(*scan).next.is_null() {
+            let next = (*scan).next;
+            if scan as usize + (*scan).size == next as usize {
+                (*scan).size += (*next).size;
+                (*scan).next = (*next).next;
             } else {
-                curr = (*curr).next;
+                scan = (*scan).next;
             }
         }
-    }
-}
-
-pub struct LockedHeap {
-    state: Spinlock<HeapState>,
-}
-
-unsafe impl Send for LockedHeap {}
-unsafe impl Sync for LockedHeap {}
-
-impl LockedHeap {
-    pub const fn empty() -> Self {
-        Self {
-            state: Spinlock::new(HeapState::empty()),
-        }
-    }
-
-    pub unsafe fn init(&self, start: usize, size: usize) {
-        self.state.lock().init(start, size);
     }
 }
 
 unsafe impl GlobalAlloc for LockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.state.lock().alloc(layout)
+        self.acquire();
+        let ptr = (*self.state.get()).alloc(layout);
+        self.release();
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        self.state.lock().dealloc(ptr)
+        self.acquire();
+        (*self.state.get()).dealloc(ptr);
+        self.release();
     }
 }
